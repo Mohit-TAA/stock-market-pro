@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Version 5 – Final with Ko-fi link, Streamlit URL, Google Sheets (Option A), and cleaned popup
+Version 6 – Fixed data fetching & freemium counters
 """
 
 import os
@@ -213,7 +213,7 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager (full version – identical to original)
+# Professional Data Manager (with robust fetching)
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
@@ -227,17 +227,52 @@ class ProfessionalDataManager:
             ticker = yf.Ticker(symbol)
             if start and end:
                 df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True)
-            else:
-                period_map = {"1w":"5d","1mo":"1mo","2mo":"2mo","3mo":"3mo","4mo":"3mo","5mo":"3mo","6mo":"6mo","9mo":"6mo","1y":"1y","2y":"2y","3y":"3y","5y":"5y","max":"max"}
-                yf_period = period_map.get(period, "2y")
-                df = ticker.history(period=yf_period, interval=interval, auto_adjust=True)
+                if not df.empty:
+                    df.columns = [col.lower() for col in df.columns]
+                    df = _self._calculate_advanced_indicators(df)
+                    return df
+                else:
+                    st.warning(f"No data found for {symbol} in the selected date range.")
+                    return pd.DataFrame()
+
+            period_map = {
+                "1w": "5d", "1mo": "1mo", "2mo": "2mo", "3mo": "3mo",
+                "4mo": "3mo", "5mo": "3mo", "6mo": "6mo", "9mo": "6mo",
+                "1y": "1y", "2y": "2y", "3y": "3y", "5y": "5y", "max": "max"
+            }
+            yf_period = period_map.get(period, "2y")
+
+            for attempt in range(3):
+                try:
+                    df = ticker.history(period=yf_period, interval=interval, auto_adjust=True)
+                    if not df.empty:
+                        break
+                except Exception as e:
+                    _self.logger.log_error(f"Attempt {attempt+1} failed for {symbol}: {e}")
+                    if attempt < 2:
+                        time.sleep(1)
+                    else:
+                        raise e
+
             if df.empty:
+                if yf_period == "max":
+                    df = ticker.history(period="5y", interval=interval, auto_adjust=True)
+                if df.empty:
+                    df = ticker.history(period="1y", interval=interval, auto_adjust=True)
+                if df.empty:
+                    df = ticker.history(period="1mo", interval=interval, auto_adjust=True)
+
+            if df.empty:
+                st.error(f"Could not fetch data for {symbol}. Yahoo Finance may be temporarily unavailable. Please try again later.")
                 return pd.DataFrame()
+
             df.columns = [col.lower() for col in df.columns]
             df = _self._calculate_advanced_indicators(df)
             return df
+
         except Exception as e:
             _self.logger.log_error(f"Error fetching data for {symbol}: {e}")
+            st.error(f"Failed to load data for {symbol}. Error: {str(e)}")
             return pd.DataFrame()
 
     def _calculate_advanced_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1194,18 +1229,18 @@ class ProfessionalReportGenerator:
                     html += f"<div class='section'><h2>📊 {display_name} (Annual)</h2><table class='statement-table'><thead><tr><th>Item</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "</tr></thead><tbody>"
+                    html += "<tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
                             html += f"<td>{format_large_number(stmt_df.loc[idx,col])}</td>"
                         html += "</tr>"
-                    html += "</tbody></table></div>"
+                    html += "</tbody><tr></div>"
                 elif stmt_name == 'ratios' and not stmt_df.empty:
                     html += "<div class='section'><h2>📐 Financial Ratios (Annual)</h2><table class='statement-table'><thead><tr><th>Ratio</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "</tr></thead><tbody>"
+                    html += "<tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
@@ -1216,7 +1251,7 @@ class ProfessionalReportGenerator:
                                 formatted = f"{val:.2f}" if not pd.isna(val) else "N/A"
                             html += f"<td>{formatted}</td>"
                         html += "</tr>"
-                    html += "</tbody></tr></div>"
+                    html += "</tbody></table></div>"
         html += "<div class='section'><h2>🤖 Multi-Method Prediction Analysis</h2>"
         if prediction and 'predictions' in prediction:
             for method_name,method_pred in prediction['predictions'].items():
@@ -1660,6 +1695,10 @@ class ProfessionalMarketPlatform:
                 st.error(f"No data found for {symbol}")
                 return
             fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
+        
+        # If we reached here, data was successfully fetched – increment search counter
+        self.freemium.record_action("search")
+        
         current_price = data['close'].iloc[-1]
         col1,col2,col3,col4 = st.columns(4)
         with col1: st.markdown(f"**Company**<br>{fundamentals.get('company_name','N/A')}", unsafe_allow_html=True)
@@ -1798,7 +1837,6 @@ class ProfessionalMarketPlatform:
             tech_data = data.tail(10)[['close','sma_20','sma_50','rsi','macd','volume']].copy().round(3)
             tech_data.index = tech_data.index.strftime('%Y-%m-%d')
             st.dataframe(tech_data, use_container_width=True)
-        self.freemium.record_action("search")
         if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
             feedback_dialog()
 
@@ -2110,6 +2148,8 @@ class ProfessionalMarketPlatform:
                         self.db_manager.add_report_history(symbol, price, prediction.get('best_prediction',{}).get('signal'), None, pdf_path)
                         with open(pdf_path,"rb") as f:
                             st.download_button("📥 Download PDF", f, file_name=os.path.basename(pdf_path))
+                        # Only record report action on success
+                        self.freemium.record_action("report")
                     else:
                         st.error("PDF generation failed")
         with col2:
@@ -2127,6 +2167,8 @@ class ProfessionalMarketPlatform:
                             charts[ind] = base64.b64encode(img).decode()
                     result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
                     st.success(result)
+                    # Only record report action on success (HTML generation always shows success)
+                    self.freemium.record_action("report")
         st.subheader("📥 Comprehensive Data Export")
         if st.button("Export Detailed CSV", use_container_width=True):
             data = self.data_manager.get_stock_data(symbol,"max")
@@ -2137,7 +2179,8 @@ class ProfessionalMarketPlatform:
             if csv_file:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.download_button("📥 Download CSV", csv_file.getvalue(), file_name=f"{symbol}_analysis_{timestamp}.csv", mime="text/csv", use_container_width=True)
-        self.freemium.record_action("report")
+                # Only record report action on success
+                self.freemium.record_action("report")
         display_contextual_share_buttons(f"Check out my comprehensive analysis report for {symbol} on STOCK MARKET Pro!")
         if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
             feedback_dialog()
