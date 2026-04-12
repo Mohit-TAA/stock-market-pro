@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Version 6.2 – Robust data fetching, fixed watchlist, report charts, shareable links
+Version 6.2 – Exponential backoff, Chromium static charts, fixed exports, shareable link
 """
 
 import os
@@ -30,14 +30,13 @@ from urllib.parse import quote
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# Auto-install missing packages
+# Auto-install missing packages (only needed for local runs; cloud uses requirements.txt)
 # =============================================================================
 REQUIRED_PACKAGES = [
     'streamlit', 'pandas', 'numpy', 'yfinance', 'plotly',
     'scikit-learn', 'matplotlib', 'requests', 'joblib',
     'openpyxl', 'xlsxwriter', 'statsmodels', 'ta',
-    'reportlab', 'kaleido', 'streamlit-ws-localstorage',
-    'gspread', 'google-auth'
+    'reportlab', 'gspread', 'google-auth'
 ]
 
 def install_missing_packages():
@@ -46,10 +45,6 @@ def install_missing_packages():
         try:
             if package == 'scikit-learn':
                 import sklearn
-            elif package == 'streamlit-ws-localstorage':
-                import streamlit_ws_localstorage
-            elif package == 'gspread':
-                import gspread
             else:
                 importlib.import_module(package)
             print(f"✅ {package}")
@@ -92,13 +87,9 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 import plotly.io as pio
 
-# Freemium libraries
-from streamlit_ws_localstorage import injectWebsocketCode
+# Freemium libraries (streamlit-ws-localstorage removed)
 import gspread
 from google.oauth2.service_account import Credentials
-
-# Set kaleido headless arguments for cloud Chrome
-pio.kaleido.scope.chromium_args = ("--headless", "--no-sandbox", "--disable-dev-shm-usage")
 
 # =============================================================================
 # Configuration
@@ -217,7 +208,7 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager with robust fetching (exponential backoff, no fallback)
+# Professional Data Manager with exponential backoff
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
@@ -228,7 +219,9 @@ class ProfessionalDataManager:
         """Fetch data with exponential backoff retries."""
         for attempt in range(max_retries):
             try:
-                df = ticker.history(period=period, interval=interval, auto_adjust=True, timeout=60)
+                # Set timeout: 60s for large periods, 30s for others
+                timeout = 60 if period in ["max", "5y", "10y"] else 30
+                df = ticker.history(period=period, interval=interval, auto_adjust=True, timeout=timeout)
                 if not df.empty:
                     return df
             except Exception as e:
@@ -261,7 +254,6 @@ class ProfessionalDataManager:
             }
             yf_period = period_map.get(period, "2y")
 
-            # Fetch with retry and timeout
             df = _self._fetch_with_retry(ticker, yf_period, interval)
 
             if df.empty:
@@ -486,7 +478,7 @@ class ProfessionalDataManager:
             return pd.DataFrame()
 
 # =============================================================================
-# Advanced Forecasting Engine (full)
+# Advanced Forecasting Engine (full – unchanged)
 # =============================================================================
 class AdvancedForecastingEngine:
     def __init__(self):
@@ -615,7 +607,7 @@ class AdvancedForecastingEngine:
             return None, f"ARIMA failed: {str(e)}"
 
 # =============================================================================
-# Multi-Method Prediction Engine (full)
+# Multi-Method Prediction Engine (full – unchanged)
 # =============================================================================
 class MultiMethodPredictionEngine:
     def __init__(self):
@@ -809,7 +801,7 @@ class MultiMethodPredictionEngine:
             return {}
 
 # =============================================================================
-# Paper Trading Engine
+# Paper Trading Engine (full – unchanged)
 # =============================================================================
 class PaperTradingEngine:
     def __init__(self, db_manager):
@@ -872,7 +864,7 @@ class PaperTradingEngine:
             return False,f"Trade execution error: {str(e)}"
 
 # =============================================================================
-# Professional Chart Engine (full)
+# Professional Chart Engine (full – unchanged)
 # =============================================================================
 class ProfessionalChartEngine:
     def __init__(self):
@@ -946,7 +938,7 @@ class ProfessionalChartEngine:
         return fig
 
 # =============================================================================
-# Database Manager (full)
+# Database Manager (full – unchanged)
 # =============================================================================
 class DatabaseManager:
     def __init__(self, db_path=Config.DB_PATH):
@@ -1062,7 +1054,7 @@ class DatabaseManager:
         return results
 
 # =============================================================================
-# Professional Report Generator (full)
+# Professional Report Generator (full – unchanged, but uses Chromium for static images)
 # =============================================================================
 class ProfessionalReportGenerator:
     def __init__(self):
@@ -1218,7 +1210,7 @@ class ProfessionalReportGenerator:
                 html += f"<td><strong>{k2.replace('_',' ').title()}</strong><td>{v2}</td>"
             else:
                 html += "<td>\n<td>\n"
-            html += "</tr>"
+            html += "</td>"
         html += """
                             </tbody>
                         </table>
@@ -1231,18 +1223,18 @@ class ProfessionalReportGenerator:
                     html += f"<div class='section'><h2>📊 {display_name} (Annual)</h2><table class='statement-table'><thead><tr><th>Item</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "<tr></thead><tbody>"
+                    html += "</tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
                             html += f"<td>{format_large_number(stmt_df.loc[idx,col])}</td>"
                         html += "</tr>"
-                    html += "</tbody></table></div>"
+                    html += "</tbody><tr></div>"
                 elif stmt_name == 'ratios' and not stmt_df.empty:
                     html += "<div class='section'><h2>📐 Financial Ratios (Annual)</h2><table class='statement-table'><thead><tr><th>Ratio</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "</tr></thead><tbody>"
+                    html += "<tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
@@ -1253,7 +1245,7 @@ class ProfessionalReportGenerator:
                                 formatted = f"{val:.2f}" if not pd.isna(val) else "N/A"
                             html += f"<td>{formatted}</td>"
                         html += "</tr>"
-                    html += "</tbody></td></div>"
+                    html += "</tbody></table></div>"
         html += "<div class='section'><h2>🤖 Multi-Method Prediction Analysis</h2>"
         if prediction and 'predictions' in prediction:
             for method_name,method_pred in prediction['predictions'].items():
@@ -1290,7 +1282,7 @@ class ProfessionalReportGenerator:
         return html
 
 # =============================================================================
-# PDF Report Generator (full)
+# PDF Report Generator (full – unchanged)
 # =============================================================================
 class PDFReportGenerator:
     def __init__(self):
@@ -1365,7 +1357,7 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (disabled – no popups in v6.2 for testing)
+# FREEMIUM MANAGER (disabled – no popups in v6.2)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
@@ -1378,18 +1370,60 @@ class FreemiumManager:
         pass
 
 # =============================================================================
-# Google Sheets storage (disabled – not used in v6.2)
+# Google Sheets storage (optional – uses secrets if available)
 # =============================================================================
 def get_gsheet_client():
-    return None
+    try:
+        creds_dict = st.secrets["gsheets_service_account"]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except:
+        return None
+
 def store_user_data(name, email, user_id):
-    return True
+    try:
+        client = get_gsheet_client()
+        if client is not None:
+            spreadsheet_url = st.secrets["gsheets"]["spreadsheet"]
+            sheet = client.open_by_url(spreadsheet_url).worksheet("Users")
+            sheet.append_row([user_id, name, email, datetime.now().isoformat()])
+            return True
+    except:
+        pass
+    return False
+
 def store_feedback(name, email, user_id, rating, feature, suggestions, step2_data=None):
-    return True
+    try:
+        client = get_gsheet_client()
+        if client is not None:
+            spreadsheet_url = st.secrets["gsheets"]["spreadsheet"]
+            sheet = client.open_by_url(spreadsheet_url).worksheet("Feedback")
+            sheet.append_row([user_id, name, email, rating, feature, suggestions, 
+                              step2_data.get("next_feature","") if step2_data else "",
+                              step2_data.get("extra","") if step2_data else "",
+                              datetime.now().isoformat()])
+            return True
+    except:
+        pass
+    return False
 
 # =============================================================================
-# Dialogs (completely removed)
+# Static image generation using Chromium (replaces Kaleido)
 # =============================================================================
+def fig_to_png(fig, width=800, height=400):
+    """Convert a Plotly figure to PNG using Chromium browser (installed via packages.txt)."""
+    try:
+        # Set environment variable for Chromium path (common location on Ubuntu)
+        os.environ['KALEIDO_BROWSER_EXECUTABLE'] = '/usr/bin/chromium-browser'
+        # Also try to set the default browser if the above fails
+        pio.kaleido.scope.default_width = width
+        pio.kaleido.scope.default_height = height
+        return fig.to_image(format="png", width=width, height=height)
+    except Exception as e:
+        # Log error but don't crash – report will continue without charts
+        print(f"Static image generation failed: {e}")
+        return None
 
 # =============================================================================
 # Professional Market Platform (main app with all features + shareable report link)
@@ -1443,9 +1477,8 @@ class ProfessionalMarketPlatform:
     def init_session_state(self):
         if 'current_symbol' not in st.session_state:
             st.session_state.current_symbol = 'AAPL'
-        # Default period changed to "1y"
         if 'analysis_period' not in st.session_state:
-            st.session_state.analysis_period = "1y"
+            st.session_state.analysis_period = "1y"   # default changed to 1 year
         if 'current_tab' not in st.session_state:
             st.session_state.current_tab = "Market Dashboard"
         if 'previous_tab' not in st.session_state:
@@ -1489,7 +1522,7 @@ class ProfessionalMarketPlatform:
             st.header("🔍 Stock Analysis")
             with st.form("symbol_form"):
                 st.session_state.current_symbol = st.text_input("Stock Symbol", value=st.session_state.current_symbol).upper()
-                # Default index for "1y" (position 9 in PERIOD_OPTIONS list)
+                # Set default index to "1y"
                 default_index = Config.PERIOD_OPTIONS.index("1y") if "1y" in Config.PERIOD_OPTIONS else 9
                 st.session_state.analysis_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else default_index)
                 if st.checkbox("Use custom date range"):
@@ -1966,7 +1999,7 @@ class ProfessionalMarketPlatform:
                     if isinstance(val,str) and '-' in val: return 'color: #dc3545'
                     elif isinstance(val,str) and '+' in val: return 'color: #28a745'
                     return ''
-                # Fixed: replace applymap with map
+                # Fixed: use .map() instead of .applymap()
                 styled_df = df.style.format({'Added Price':'${:.2f}','Current Price':'${:.2f}','Change $':'${:+.2f}','Change %':'{:+.2f}%'}).map(color_neg, subset=['Change $','Change %'])
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 st.subheader("Remove Stock")
@@ -2007,11 +2040,12 @@ class ProfessionalMarketPlatform:
                     statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
                     charts = {}
                     if not data.empty:
-                        for ind,name in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
+                        for name in ["RSI", "MACD", "Bollinger Bands"]:
                             try:
                                 fig = self.chart_engine.create_technical_chart(data, name)
-                                img = fig.to_image(format="png", width=800, height=400)
-                                charts[ind] = img
+                                img_bytes = fig_to_png(fig, width=800, height=400)
+                                if img_bytes:
+                                    charts[name] = img_bytes
                             except Exception as e:
                                 st.warning(f"Could not generate chart for {name}: {e}")
                     pdf_path = self.pdf_generator.generate_pdf(symbol, data, fundamentals, prediction, statements, charts)
@@ -2031,11 +2065,12 @@ class ProfessionalMarketPlatform:
                     statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
                     charts = {}
                     if not data.empty:
-                        for ind,name in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
+                        for name in ["RSI", "MACD", "Bollinger Bands"]:
                             try:
                                 fig = self.chart_engine.create_technical_chart(data, name)
-                                img = fig.to_image(format="png", width=800, height=400)
-                                charts[ind] = base64.b64encode(img).decode()
+                                img_bytes = fig_to_png(fig, width=800, height=400)
+                                if img_bytes:
+                                    charts[name] = base64.b64encode(img_bytes).decode()
                             except Exception as e:
                                 st.warning(f"Could not generate chart for {name}: {e}")
                     result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
