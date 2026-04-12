@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Version 6 – Fixed data fetching & freemium counters
+Version 6 – Fixed pandas fillna, popup improvements, Google Sheets resilience
 """
 
 import os
@@ -213,7 +213,7 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager (with robust fetching)
+# Professional Data Manager (with robust fetching and pandas 2.0+ fix)
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
@@ -321,7 +321,8 @@ class ProfessionalDataManager:
         for periods in [5,21,63,126,252,756,1260]:
             df[f'return_{periods}d'] = df['close'].pct_change(periods)
         df['volatility_20d'] = df['daily_return'].rolling(20).std() * np.sqrt(252)
-        return df.fillna(method='ffill').fillna(method='bfill')
+        # FIX: replace .fillna(method='ffill').fillna(method='bfill') with .ffill().bfill()
+        return df.ffill().bfill()
 
     @st.cache_data(ttl=300, show_spinner=False)
     def get_index_data(_self, index_symbol: str) -> Dict:
@@ -1229,18 +1230,18 @@ class ProfessionalReportGenerator:
                     html += f"<div class='section'><h2>📊 {display_name} (Annual)</h2><table class='statement-table'><thead><tr><th>Item</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "<tr></thead><tbody>"
+                    html += "</table></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
                             html += f"<td>{format_large_number(stmt_df.loc[idx,col])}</td>"
                         html += "</tr>"
-                    html += "</tbody><tr></div>"
+                    html += "</tbody></table></div>"
                 elif stmt_name == 'ratios' and not stmt_df.empty:
                     html += "<div class='section'><h2>📐 Financial Ratios (Annual)</h2><table class='statement-table'><thead><tr><th>Ratio</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "<tr></thead><tbody>"
+                    html += "</tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
@@ -1251,7 +1252,7 @@ class ProfessionalReportGenerator:
                                 formatted = f"{val:.2f}" if not pd.isna(val) else "N/A"
                             html += f"<td>{formatted}</td>"
                         html += "</tr>"
-                    html += "</tbody></table></div>"
+                    html += "</tbody></tr></div>"
         html += "<div class='section'><h2>🤖 Multi-Method Prediction Analysis</h2>"
         if prediction and 'predictions' in prediction:
             for method_name,method_pred in prediction['predictions'].items():
@@ -1474,12 +1475,12 @@ def store_feedback(name, email, user_id, rating, feature, suggestions, step2_dat
         return False
 
 # =============================================================================
-# Dialogs (Freemium) – Single-stage form + thank you + explicit download button
+# Dialogs (Freemium) – UPDATED: split message, removed success text, added italic caption
 # =============================================================================
 @st.dialog("📥 Free Code Download", width="medium", dismissible=False)
 def email_capture_dialog(freemium: FreemiumManager):
     # Single stage: form with name, email, and "CLAIM FREE CODE" button
-    st.markdown("🎁 Download the complete code – no payment required. ✨ Just enter your name & email, and you're all set. 🚀")
+    st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
     with st.form("email_form"):
         name = st.text_input("Your Name")
         email = st.text_input("Email Address")
@@ -1492,11 +1493,12 @@ def email_capture_dialog(freemium: FreemiumManager):
                     st.session_state.email = email
                     st.session_state.report_count = 0
                     st.session_state.search_count = 0
-                    # Show thank you message
-                    st.success("✅ Thank you! Your data has been saved.")
-                    # Show download button that opens Ko-fi in new tab
+                    # Show success emoji (no text)
+                    st.markdown("🎉")
+                    # Show download button with italic caption
                     KO_FI_URL = "https://ko-fi.com/s/d2b839b388"
                     st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
+                    st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
                 else:
                     st.error("Failed to save data. Please try again.")
             else:
