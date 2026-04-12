@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Version 6 – Fixed pandas fillna, popup improvements, Google Sheets resilience
+Version 6.1 – No popups, unlimited usage (testing only)
 """
 
 import os
@@ -91,7 +91,7 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 
-# Freemium libraries
+# Freemium libraries (still imported but not used)
 from streamlit_ws_localstorage import injectWebsocketCode
 import gspread
 from google.oauth2.service_account import Credentials
@@ -321,7 +321,6 @@ class ProfessionalDataManager:
         for periods in [5,21,63,126,252,756,1260]:
             df[f'return_{periods}d'] = df['close'].pct_change(periods)
         df['volatility_20d'] = df['daily_return'].rolling(20).std() * np.sqrt(252)
-        # FIX: replace .fillna(method='ffill').fillna(method='bfill') with .ffill().bfill()
         return df.ffill().bfill()
 
     @st.cache_data(ttl=300, show_spinner=False)
@@ -1230,7 +1229,7 @@ class ProfessionalReportGenerator:
                     html += f"<div class='section'><h2>📊 {display_name} (Annual)</h2><table class='statement-table'><thead><tr><th>Item</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "</table></thead><tbody>"
+                    html += "<tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
@@ -1252,7 +1251,7 @@ class ProfessionalReportGenerator:
                                 formatted = f"{val:.2f}" if not pd.isna(val) else "N/A"
                             html += f"<td>{formatted}</td>"
                         html += "</tr>"
-                    html += "</tbody></tr></div>"
+                    html += "</tbody><tr></div>"
         html += "<div class='section'><h2>🤖 Multi-Method Prediction Analysis</h2>"
         if prediction and 'predictions' in prediction:
             for method_name,method_pred in prediction['predictions'].items():
@@ -1364,193 +1363,33 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (with gspread)
+# FREEMIUM MANAGER (disabled – no popups)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
-        self.init_session_state()
-        self.user_id = self.get_user_id()
-        st.session_state.user_id = self.user_id
-    def init_session_state(self):
-        defaults = {"report_count":0,"search_count":0,"wait_until":None,"email_provided":False,"name":"","email":"","user_id":None,"feedback_shown_this_session":False}
-        for key,val in defaults.items():
-            if key not in st.session_state:
-                st.session_state[key]=val
-    def get_user_id(self):
-        try:
-            HOST_PORT = "wsauthserver.supergroup.ai"
-            conn = injectWebsocketCode(hostPort=HOST_PORT, uid=str(uuid.uuid1()))
-            uid = conn.getLocalStorageVal(key="stock_app_user_id")
-            if not uid:
-                uid = str(uuid.uuid4())
-                conn.setLocalStorageVal(key="stock_app_user_id", val=uid)
-            return uid
-        except:
-            return str(uuid.uuid4())
+        # No session state initialization for counters – all actions allowed
+        pass
     def can_perform_action(self, action_type: str) -> bool:
-        if st.session_state.email_provided: return True
-        if st.session_state.wait_until and datetime.now() < st.session_state.wait_until:
-            remaining = (st.session_state.wait_until - datetime.now()).seconds//60
-            st.warning(f"Please wait {remaining} minutes.")
-            return False
-        if action_type == "report":
-            return st.session_state.report_count < 1
-        elif action_type == "search":
-            return st.session_state.search_count < 3
-        return False
+        return True  # always allow
     def record_action(self, action_type: str):
-        if action_type == "report":
-            st.session_state.report_count += 1
-        elif action_type == "search":
-            st.session_state.search_count += 1
-        st.rerun()
+        pass  # do nothing
     def start_waiting_period(self):
-        st.session_state.wait_until = datetime.now() + timedelta(minutes=15)
-        st.rerun()
+        pass  # do nothing
 
 # =============================================================================
-# Google Sheets storage using gspread (with fallback to local CSV)
+# Google Sheets storage (disabled – not used in v6.1)
 # =============================================================================
 def get_gsheet_client():
-    try:
-        creds_dict = st.secrets["gsheets_service_account"]
-        scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
-    except:
-        return None
-
+    return None
 def store_user_data(name, email, user_id):
-    # Try Google Sheets first
-    try:
-        client = get_gsheet_client()
-        if client is not None:
-            spreadsheet_url = st.secrets["gsheets"]["spreadsheet"]
-            sheet = client.open_by_url(spreadsheet_url).worksheet("Users")
-            sheet.append_row([user_id, name, email, datetime.now().isoformat()])
-            return True
-    except:
-        pass
-    # Fallback to local CSV
-    try:
-        Path("data").mkdir(exist_ok=True)
-        with open("data/users.csv", "a", newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if f.tell() == 0:
-                writer.writerow(["user_id","name","email","timestamp"])
-            writer.writerow([user_id, name, email, datetime.now().isoformat()])
-        return True
-    except:
-        return False
-
+    return True
 def store_feedback(name, email, user_id, rating, feature, suggestions, step2_data=None):
-    # Try Google Sheets first
-    try:
-        client = get_gsheet_client()
-        if client is not None:
-            spreadsheet_url = st.secrets["gsheets"]["spreadsheet"]
-            sheet = client.open_by_url(spreadsheet_url).worksheet("Feedback")
-            # For two-step feedback, store additional fields
-            sheet.append_row([user_id, name, email, rating, feature, suggestions, 
-                              step2_data.get("next_feature","") if step2_data else "",
-                              step2_data.get("extra","") if step2_data else "",
-                              datetime.now().isoformat()])
-            return True
-    except:
-        pass
-    # Fallback to local CSV
-    try:
-        Path("data").mkdir(exist_ok=True)
-        with open("data/feedback.csv", "a", newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if f.tell() == 0:
-                writer.writerow(["user_id","name","email","rating","feature","suggestions",
-                                 "next_feature","extra","timestamp"])
-            writer.writerow([user_id, name, email, rating, feature, suggestions,
-                             step2_data.get("next_feature","") if step2_data else "",
-                             step2_data.get("extra","") if step2_data else "",
-                             datetime.now().isoformat()])
-        return True
-    except:
-        return False
+    return True
 
 # =============================================================================
-# Dialogs (Freemium) – UPDATED: split message, removed success text, added italic caption
+# Dialogs (completely removed)
 # =============================================================================
-@st.dialog("📥 Free Code Download", width="medium", dismissible=False)
-def email_capture_dialog(freemium: FreemiumManager):
-    # Single stage: form with name, email, and "CLAIM FREE CODE" button
-    st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
-    with st.form("email_form"):
-        name = st.text_input("Your Name")
-        email = st.text_input("Email Address")
-        submitted = st.form_submit_button("CLAIM FREE CODE", type="primary")
-        if submitted:
-            if name and email and is_valid_email(email):
-                if store_user_data(name, email, freemium.user_id):
-                    st.session_state.email_provided = True
-                    st.session_state.name = name
-                    st.session_state.email = email
-                    st.session_state.report_count = 0
-                    st.session_state.search_count = 0
-                    # Show success emoji (no text)
-                    st.markdown("🎉")
-                    # Show download button with italic caption
-                    KO_FI_URL = "https://ko-fi.com/s/d2b839b388"
-                    st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
-                    st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
-                else:
-                    st.error("Failed to save data. Please try again.")
-            else:
-                st.error("Valid name and email required.")
-
-@st.dialog("📝 We value your feedback!", width="medium")
-def feedback_dialog():
-    # Two-step feedback (Option A)
-    if "feedback_step" not in st.session_state:
-        st.session_state.feedback_step = 1
-        st.session_state.feedback_data = {}
-
-    if st.session_state.feedback_step == 1:
-        st.write(f"👋 **Hey {st.session_state.name}, thanks for being a Pro!**")
-        st.write("We'd love your feedback to make STOCK MARKET Pro even better.")
-        with st.form("feedback_step1"):
-            rating = st.slider("How likely are you to recommend STOCK MARKET Pro to a friend?", 0, 10, 5)
-            reason = st.text_area("What's the main reason for your score?")
-            next_btn = st.form_submit_button("Next →")
-            if next_btn:
-                st.session_state.feedback_data["rating"] = rating
-                st.session_state.feedback_data["reason"] = reason
-                st.session_state.feedback_step = 2
-                st.rerun()
-    elif st.session_state.feedback_step == 2:
-        st.write("**Almost done!**")
-        with st.form("feedback_step2"):
-            next_feature = st.selectbox(
-                "Which feature would you like to see next?",
-                ["More indicators", "Crypto support", "API access", "Backtesting", "Other"]
-            )
-            extra = st.text_area("Anything else you'd like to share? (optional)")
-            submit = st.form_submit_button("Submit feedback")
-            if submit:
-                # Store feedback
-                success = store_feedback(
-                    st.session_state.name,
-                    st.session_state.email,
-                    st.session_state.user_id,
-                    st.session_state.feedback_data.get("rating"),
-                    st.session_state.feedback_data.get("reason"),
-                    extra,
-                    {"next_feature": next_feature, "extra": extra}
-                )
-                if success:
-                    st.success("Thank you for your feedback! 🙏")
-                    st.session_state.feedback_shown_this_session = True
-                    st.session_state.feedback_step = 1
-                    st.session_state.feedback_data = {}
-                    st.rerun()
-                else:
-                    st.error("Failed to submit. Please try again.")
+# No email_capture_dialog or feedback_dialog functions
 
 # =============================================================================
 # Professional Market Platform (main app with all features)
@@ -1598,7 +1437,6 @@ class ProfessionalMarketPlatform:
         if st.session_state.previous_tab != st.session_state.current_tab:
             st.session_state.previous_tab = st.session_state.current_tab
         st.markdown('<div class="main-header">STOCK MARKET Pro - Advanced US Stock Analysis</div>', unsafe_allow_html=True)
-        # Global share buttons at the top
         display_global_share_buttons()
         self.render_sidebar()
         if st.session_state.current_tab == "Market Dashboard":
@@ -1679,9 +1517,7 @@ class ProfessionalMarketPlatform:
             st.plotly_chart(self.chart_engine.create_volume_chart(index_data, selected_index), use_container_width=True)
 
     def render_stock_analysis(self):
-        if not self.freemium.can_perform_action("search"):
-            email_capture_dialog(self.freemium)
-            return
+        # No freemium check – always allowed
         st.header("🔍 Stock Analysis")
         symbol = st.session_state.current_symbol
         period = st.session_state.analysis_period
@@ -1697,9 +1533,6 @@ class ProfessionalMarketPlatform:
                 st.error(f"No data found for {symbol}")
                 return
             fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-        
-        # If we reached here, data was successfully fetched – increment search counter
-        self.freemium.record_action("search")
         
         current_price = data['close'].iloc[-1]
         col1,col2,col3,col4 = st.columns(4)
@@ -1839,8 +1672,6 @@ class ProfessionalMarketPlatform:
             tech_data = data.tail(10)[['close','sma_20','sma_50','rsi','macd','volume']].copy().round(3)
             tech_data.index = tech_data.index.strftime('%Y-%m-%d')
             st.dataframe(tech_data, use_container_width=True)
-        if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
-            feedback_dialog()
 
     def render_advanced_charts(self):
         st.header("📊 Advanced Technical Charts")
@@ -2121,9 +1952,7 @@ class ProfessionalMarketPlatform:
             st.info("🌟 Your watchlist is empty. Add some stocks to get started!")
 
     def render_reports(self):
-        if not self.freemium.can_perform_action("report"):
-            email_capture_dialog(self.freemium)
-            return
+        # No freemium check – always allowed
         st.header("📊 Reports & Export")
         symbol = st.session_state.current_symbol
         if not symbol:
@@ -2150,8 +1979,6 @@ class ProfessionalMarketPlatform:
                         self.db_manager.add_report_history(symbol, price, prediction.get('best_prediction',{}).get('signal'), None, pdf_path)
                         with open(pdf_path,"rb") as f:
                             st.download_button("📥 Download PDF", f, file_name=os.path.basename(pdf_path))
-                        # Only record report action on success
-                        self.freemium.record_action("report")
                     else:
                         st.error("PDF generation failed")
         with col2:
@@ -2169,8 +1996,6 @@ class ProfessionalMarketPlatform:
                             charts[ind] = base64.b64encode(img).decode()
                     result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
                     st.success(result)
-                    # Only record report action on success (HTML generation always shows success)
-                    self.freemium.record_action("report")
         st.subheader("📥 Comprehensive Data Export")
         if st.button("Export Detailed CSV", use_container_width=True):
             data = self.data_manager.get_stock_data(symbol,"max")
@@ -2181,20 +2006,13 @@ class ProfessionalMarketPlatform:
             if csv_file:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.download_button("📥 Download CSV", csv_file.getvalue(), file_name=f"{symbol}_analysis_{timestamp}.csv", mime="text/csv", use_container_width=True)
-                # Only record report action on success
-                self.freemium.record_action("report")
         display_contextual_share_buttons(f"Check out my comprehensive analysis report for {symbol} on STOCK MARKET Pro!")
-        if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
-            feedback_dialog()
 
 # =============================================================================
 # Main
 # =============================================================================
 def main():
     try:
-        if "freemium_initialized" not in st.session_state:
-            fm = FreemiumManager()
-            st.session_state.freemium_initialized = True
         app = ProfessionalMarketPlatform()
         app.run()
     except Exception as e:
