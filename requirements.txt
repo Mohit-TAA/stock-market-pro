@@ -12,5 +12,3 @@ xlsxwriter
 statsmodels
 ta
 reportlab
-gspread
-google-auth
