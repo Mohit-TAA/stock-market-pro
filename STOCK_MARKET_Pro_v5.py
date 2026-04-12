@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Version 6.1 – No popups, unlimited usage (testing only)
+Version 6.2 – Robust data fetching, fixed watchlist, report charts, shareable links
 """
 
 import os
@@ -90,11 +90,15 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
+import plotly.io as pio
 
-# Freemium libraries (still imported but not used)
+# Freemium libraries
 from streamlit_ws_localstorage import injectWebsocketCode
 import gspread
 from google.oauth2.service_account import Credentials
+
+# Set kaleido headless arguments for cloud Chrome
+pio.kaleido.scope.chromium_args = ("--headless", "--no-sandbox", "--disable-dev-shm-usage")
 
 # =============================================================================
 # Configuration
@@ -213,12 +217,27 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager (with robust fetching and pandas 2.0+ fix)
+# Professional Data Manager with robust fetching (exponential backoff, no fallback)
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
         self.price_cache = {}
         self.logger = Logger()
+
+    def _fetch_with_retry(self, ticker, period, interval, max_retries=5, base_delay=2):
+        """Fetch data with exponential backoff retries."""
+        for attempt in range(max_retries):
+            try:
+                df = ticker.history(period=period, interval=interval, auto_adjust=True, timeout=60)
+                if not df.empty:
+                    return df
+            except Exception as e:
+                self.logger.log_error(f"Attempt {attempt+1} failed: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                wait_time = base_delay * (2 ** attempt)
+                time.sleep(wait_time)
+        return pd.DataFrame()
 
     @st.cache_data(ttl=300, show_spinner=False)
     def get_stock_data(_self, symbol: str, period: str = "max", interval: str = "1d",
@@ -242,28 +261,11 @@ class ProfessionalDataManager:
             }
             yf_period = period_map.get(period, "2y")
 
-            for attempt in range(3):
-                try:
-                    df = ticker.history(period=yf_period, interval=interval, auto_adjust=True)
-                    if not df.empty:
-                        break
-                except Exception as e:
-                    _self.logger.log_error(f"Attempt {attempt+1} failed for {symbol}: {e}")
-                    if attempt < 2:
-                        time.sleep(1)
-                    else:
-                        raise e
+            # Fetch with retry and timeout
+            df = _self._fetch_with_retry(ticker, yf_period, interval)
 
             if df.empty:
-                if yf_period == "max":
-                    df = ticker.history(period="5y", interval=interval, auto_adjust=True)
-                if df.empty:
-                    df = ticker.history(period="1y", interval=interval, auto_adjust=True)
-                if df.empty:
-                    df = ticker.history(period="1mo", interval=interval, auto_adjust=True)
-
-            if df.empty:
-                st.error(f"Could not fetch data for {symbol}. Yahoo Finance may be temporarily unavailable. Please try again later.")
+                st.error(f"Could not fetch data for {symbol} with period {period}. Yahoo Finance may be rate‑limiting. Please try again later or choose a shorter period.")
                 return pd.DataFrame()
 
             df.columns = [col.lower() for col in df.columns]
@@ -1251,7 +1253,7 @@ class ProfessionalReportGenerator:
                                 formatted = f"{val:.2f}" if not pd.isna(val) else "N/A"
                             html += f"<td>{formatted}</td>"
                         html += "</tr>"
-                    html += "</tbody><tr></div>"
+                    html += "</tbody></td></div>"
         html += "<div class='section'><h2>🤖 Multi-Method Prediction Analysis</h2>"
         if prediction and 'predictions' in prediction:
             for method_name,method_pred in prediction['predictions'].items():
@@ -1363,21 +1365,20 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (disabled – no popups)
+# FREEMIUM MANAGER (disabled – no popups in v6.2 for testing)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
-        # No session state initialization for counters – all actions allowed
         pass
     def can_perform_action(self, action_type: str) -> bool:
-        return True  # always allow
+        return True
     def record_action(self, action_type: str):
-        pass  # do nothing
+        pass
     def start_waiting_period(self):
-        pass  # do nothing
+        pass
 
 # =============================================================================
-# Google Sheets storage (disabled – not used in v6.1)
+# Google Sheets storage (disabled – not used in v6.2)
 # =============================================================================
 def get_gsheet_client():
     return None
@@ -1389,10 +1390,9 @@ def store_feedback(name, email, user_id, rating, feature, suggestions, step2_dat
 # =============================================================================
 # Dialogs (completely removed)
 # =============================================================================
-# No email_capture_dialog or feedback_dialog functions
 
 # =============================================================================
-# Professional Market Platform (main app with all features)
+# Professional Market Platform (main app with all features + shareable report link)
 # =============================================================================
 class ProfessionalMarketPlatform:
     def __init__(self):
@@ -1408,6 +1408,22 @@ class ProfessionalMarketPlatform:
         self.freemium = FreemiumManager()
         self.setup_page()
         self.init_session_state()
+        self.handle_query_params()
+
+    def handle_query_params(self):
+        """Read URL query parameters to set symbol, period, and tab."""
+        params = st.query_params
+        if "symbol" in params:
+            st.session_state.current_symbol = params["symbol"].upper()
+        if "period" in params:
+            period = params["period"]
+            if period in Config.PERIOD_OPTIONS:
+                st.session_state.analysis_period = period
+        if "tab" in params:
+            tab = params["tab"]
+            valid_tabs = ["Market Dashboard","Stock Analysis","Advanced Charts","ML Predictions","Forecasting","Paper Trading","Watchlist","Reports"]
+            if tab in valid_tabs:
+                st.session_state.current_tab = tab
 
     def setup_page(self):
         st.set_page_config(page_title="STOCK MARKET Pro - Advanced US Stock Analysis", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -1425,13 +1441,21 @@ class ProfessionalMarketPlatform:
         """, unsafe_allow_html=True)
 
     def init_session_state(self):
-        if 'current_symbol' not in st.session_state: st.session_state.current_symbol = 'AAPL'
-        if 'analysis_period' not in st.session_state: st.session_state.analysis_period = "max"
-        if 'current_tab' not in st.session_state: st.session_state.current_tab = "Market Dashboard"
-        if 'previous_tab' not in st.session_state: st.session_state.previous_tab = "Market Dashboard"
-        if 'use_date_range' not in st.session_state: st.session_state.use_date_range = False
-        if 'start_date' not in st.session_state: st.session_state.start_date = None
-        if 'end_date' not in st.session_state: st.session_state.end_date = None
+        if 'current_symbol' not in st.session_state:
+            st.session_state.current_symbol = 'AAPL'
+        # Default period changed to "1y"
+        if 'analysis_period' not in st.session_state:
+            st.session_state.analysis_period = "1y"
+        if 'current_tab' not in st.session_state:
+            st.session_state.current_tab = "Market Dashboard"
+        if 'previous_tab' not in st.session_state:
+            st.session_state.previous_tab = "Market Dashboard"
+        if 'use_date_range' not in st.session_state:
+            st.session_state.use_date_range = False
+        if 'start_date' not in st.session_state:
+            st.session_state.start_date = None
+        if 'end_date' not in st.session_state:
+            st.session_state.end_date = None
 
     def run(self):
         if st.session_state.previous_tab != st.session_state.current_tab:
@@ -1465,7 +1489,9 @@ class ProfessionalMarketPlatform:
             st.header("🔍 Stock Analysis")
             with st.form("symbol_form"):
                 st.session_state.current_symbol = st.text_input("Stock Symbol", value=st.session_state.current_symbol).upper()
-                st.session_state.analysis_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else 12)
+                # Default index for "1y" (position 9 in PERIOD_OPTIONS list)
+                default_index = Config.PERIOD_OPTIONS.index("1y") if "1y" in Config.PERIOD_OPTIONS else 9
+                st.session_state.analysis_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else default_index)
                 if st.checkbox("Use custom date range"):
                     col1,col2 = st.columns(2)
                     with col1: start = st.date_input("Start", datetime.now()-timedelta(days=365))
@@ -1517,7 +1543,6 @@ class ProfessionalMarketPlatform:
             st.plotly_chart(self.chart_engine.create_volume_chart(index_data, selected_index), use_container_width=True)
 
     def render_stock_analysis(self):
-        # No freemium check – always allowed
         st.header("🔍 Stock Analysis")
         symbol = st.session_state.current_symbol
         period = st.session_state.analysis_period
@@ -1941,7 +1966,8 @@ class ProfessionalMarketPlatform:
                     if isinstance(val,str) and '-' in val: return 'color: #dc3545'
                     elif isinstance(val,str) and '+' in val: return 'color: #28a745'
                     return ''
-                styled_df = df.style.format({'Added Price':'${:.2f}','Current Price':'${:.2f}','Change $':'${:+.2f}','Change %':'{:+.2f}%'}).applymap(color_neg, subset=['Change $','Change %'])
+                # Fixed: replace applymap with map
+                styled_df = df.style.format({'Added Price':'${:.2f}','Current Price':'${:.2f}','Change $':'${:+.2f}','Change %':'{:+.2f}%'}).map(color_neg, subset=['Change $','Change %'])
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 st.subheader("Remove Stock")
                 selected_symbol = st.selectbox("Select symbol to remove", [w[0] for w in watchlist])
@@ -1952,27 +1978,42 @@ class ProfessionalMarketPlatform:
             st.info("🌟 Your watchlist is empty. Add some stocks to get started!")
 
     def render_reports(self):
-        # No freemium check – always allowed
         st.header("📊 Reports & Export")
         symbol = st.session_state.current_symbol
+        period = st.session_state.analysis_period
         if not symbol:
             st.info("Enter a stock symbol to generate reports")
             return
+        
+        # Shareable report link button
+        base_url = "https://theaxeanalyst.streamlit.app"
+        share_url = f"{base_url}?symbol={symbol}&period={period}&tab=Reports"
+        st.subheader("🔗 Share this report")
+        col_link, _ = st.columns([1, 3])
+        with col_link:
+            if st.button("📋 Copy shareable report link", help="Copy a link that opens this report directly"):
+                st.write(f'<script>navigator.clipboard.writeText("{share_url}"); alert("Link copied to clipboard!");</script>', unsafe_allow_html=True)
+                st.success("Link copied!")
+        
         st.subheader("📄 Comprehensive Reports")
         col1,col2 = st.columns(2)
         with col1:
             if st.button("Generate PDF Report", use_container_width=True, type="primary"):
                 with st.spinner("Generating comprehensive PDF report..."):
-                    data = self.data_manager.get_stock_data(symbol,"2y")
+                    # Use selected period
+                    data = self.data_manager.get_stock_data(symbol, period=period)
                     fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol)
+                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol, period)
                     statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
                     charts = {}
                     if not data.empty:
                         for ind,name in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
-                            fig = self.chart_engine.create_technical_chart(data, name)
-                            img = fig.to_image(format="png", width=800, height=400)
-                            charts[ind] = img
+                            try:
+                                fig = self.chart_engine.create_technical_chart(data, name)
+                                img = fig.to_image(format="png", width=800, height=400)
+                                charts[ind] = img
+                            except Exception as e:
+                                st.warning(f"Could not generate chart for {name}: {e}")
                     pdf_path = self.pdf_generator.generate_pdf(symbol, data, fundamentals, prediction, statements, charts)
                     if pdf_path:
                         price = data['close'].iloc[-1] if not data.empty else 0
@@ -1984,23 +2025,26 @@ class ProfessionalMarketPlatform:
         with col2:
             if st.button("Generate HTML Report", use_container_width=True):
                 with st.spinner("Generating HTML report..."):
-                    data = self.data_manager.get_stock_data(symbol,"2y")
+                    data = self.data_manager.get_stock_data(symbol, period=period)
                     fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol)
+                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol, period)
                     statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
                     charts = {}
                     if not data.empty:
                         for ind,name in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
-                            fig = self.chart_engine.create_technical_chart(data, name)
-                            img = fig.to_image(format="png", width=800, height=400)
-                            charts[ind] = base64.b64encode(img).decode()
+                            try:
+                                fig = self.chart_engine.create_technical_chart(data, name)
+                                img = fig.to_image(format="png", width=800, height=400)
+                                charts[ind] = base64.b64encode(img).decode()
+                            except Exception as e:
+                                st.warning(f"Could not generate chart for {name}: {e}")
                     result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
                     st.success(result)
         st.subheader("📥 Comprehensive Data Export")
         if st.button("Export Detailed CSV", use_container_width=True):
-            data = self.data_manager.get_stock_data(symbol,"max")
+            data = self.data_manager.get_stock_data(symbol, period=period)
             fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-            prediction = self.prediction_engine.get_comprehensive_prediction(symbol)
+            prediction = self.prediction_engine.get_comprehensive_prediction(symbol, period)
             statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
             csv_file = self.report_generator.generate_comprehensive_csv(symbol, data, fundamentals, prediction, statements)
             if csv_file:
