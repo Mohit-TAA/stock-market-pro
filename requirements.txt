@@ -12,3 +12,4 @@ xlsxwriter
 statsmodels
 ta
 reportlab
+kaleido
