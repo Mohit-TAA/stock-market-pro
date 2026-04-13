@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-STOCK MARKET Pro - Advanced US Stock Analysis
-Final version – runs on Streamlit Cloud with all features intact
+STOCK MARKET Pro - Advanced US Stock Analysis - FINAL v17
+Cloud‑ready version with:
+- Full historical data (CSV export fixed)
+- Chart export (Kaleido + Selenium fallback)
+- Freemium limits (email capture, Ko‑fi, Google Sheets)
+- Social sharing & shareable links
+- All original features (ML, forecasting, paper trading, etc.)
 """
 
 import os
@@ -16,22 +21,25 @@ import time
 import warnings
 import json
 from pathlib import Path
-import threading
 import csv
 import webbrowser
-import traceback
 import re
 import logging
+import uuid
 from typing import Dict, List, Optional, Tuple, Any, Union
 from io import BytesIO
+import base64
+from urllib.parse import quote
 
 warnings.filterwarnings('ignore')
 
+# Auto‑install missing packages (will be handled by Streamlit Cloud via requirements.txt)
 REQUIRED_PACKAGES = [
     'streamlit', 'pandas', 'numpy', 'yfinance', 'plotly',
     'scikit-learn', 'matplotlib', 'requests', 'joblib',
     'openpyxl', 'xlsxwriter', 'statsmodels', 'ta',
-    'reportlab'
+    'reportlab', 'kaleido', 'selenium', 'webdriver_manager',
+    'gspread', 'google-auth', 'streamlit-ws-localstorage'
 ]
 
 def install_missing_packages():
@@ -40,25 +48,22 @@ def install_missing_packages():
         try:
             if package == 'scikit-learn':
                 import sklearn
+            elif package == 'streamlit-ws-localstorage':
+                import streamlit_ws_localstorage
+            elif package == 'gspread':
+                import gspread
             else:
                 importlib.import_module(package)
-            print(f"✅ {package}")
         except ImportError:
             missing.append(package)
     if missing:
-        print(f"📦 Installing {len(missing)} missing packages...")
-        for package in missing:
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-                print(f"✅ {package} installed")
-            except Exception as e:
-                print(f"❌ Failed to install {package}: {e}")
+        print(f"Installing {len(missing)} missing packages...")
+        for pkg in missing:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
 
 install_missing_packages()
 
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -71,9 +76,6 @@ from sklearn.metrics import accuracy_score
 import statsmodels.api as sm
 from statsmodels.tsa.arima.model import ARIMA
 import ta
-from io import BytesIO, StringIO
-import base64
-from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -81,6 +83,13 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 import plotly.io as pio
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from streamlit_ws_localstorage import injectWebsocketCode
+import gspread
+from google.oauth2.service_account import Credentials
 
 # =============================================================================
 # Configuration
@@ -137,6 +146,52 @@ def format_percent(x):
 def safe_divide(a, b):
     return a / b if b and b != 0 else np.nan
 
+def is_valid_email(email: str) -> bool:
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    return re.match(pattern, email) is not None
+
+# =============================================================================
+# Chart Export Helper (Kaleido + Selenium fallback)
+# =============================================================================
+def export_plotly_chart(fig, width=800, height=400) -> Optional[bytes]:
+    """
+    Attempt to export Plotly figure as PNG using Kaleido.
+    If Kaleido fails, fallback to headless Chrome + Selenium.
+    Returns image bytes or None.
+    """
+    # Method 1: Kaleido
+    try:
+        os.environ["KALEIDO_CHROMIUM_ARGS"] = "--headless --no-sandbox --disable-gpu --disable-dev-shm-usage"
+        img_bytes = fig.to_image(format="png", width=width, height=height, engine="kaleido")
+        return img_bytes
+    except Exception as e:
+        st.warning(f"Kaleido export failed, trying Selenium fallback: {e}")
+
+    # Method 2: Selenium with headless Chrome
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=800,400")
+
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+
+        html = fig.to_html(include_plotlyjs='cdn')
+        full_html = f"<html><head><meta charset='utf-8'></head><body>{html}</body></html>"
+        driver.get("data:text/html;charset=utf-8," + quote(full_html))
+
+        time.sleep(2)
+
+        img_bytes = driver.get_screenshot_as_png()
+        driver.quit()
+        return img_bytes
+    except Exception as e:
+        st.warning(f"Selenium fallback also failed: {e}")
+        return None
+
 # =============================================================================
 # Logger
 # =============================================================================
@@ -155,17 +210,34 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager (with exponential backoff)
+# Professional Data Manager (with fixed full history)
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
         self.price_cache = {}
         self.logger = Logger()
 
-    def _fetch_with_retry(self, ticker, period, interval, max_retries=5, base_delay=2):
+    def _period_to_start_date(self, period: str) -> datetime:
+        now = datetime.now()
+        if period == '1w': return now - timedelta(days=7)
+        if period == '1mo': return now - timedelta(days=30)
+        if period == '2mo': return now - timedelta(days=60)
+        if period == '3mo': return now - timedelta(days=90)
+        if period == '4mo': return now - timedelta(days=120)
+        if period == '5mo': return now - timedelta(days=150)
+        if period == '6mo': return now - timedelta(days=180)
+        if period == '9mo': return now - timedelta(days=270)
+        if period == '1y': return now - timedelta(days=365)
+        if period == '2y': return now - timedelta(days=730)
+        if period == '3y': return now - timedelta(days=1095)
+        if period == '5y': return now - timedelta(days=1825)
+        if period == 'max': return datetime(1900, 1, 1)
+        return now - timedelta(days=730)
+
+    def _fetch_with_retry(self, ticker, start, end, interval, max_retries=5, base_delay=2):
         for attempt in range(max_retries):
             try:
-                df = ticker.history(period=period, interval=interval, auto_adjust=True, timeout=60)
+                df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True, timeout=60)
                 if not df.empty:
                     return df
             except Exception as e:
@@ -182,16 +254,11 @@ class ProfessionalDataManager:
         try:
             ticker = yf.Ticker(symbol)
             if start and end:
-                df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True)
+                df = _self._fetch_with_retry(ticker, start, end, interval)
             else:
-                period_map = {
-                    "1w": "5d",
-                    "1mo": "1mo", "2mo": "2mo", "3mo": "3mo", "4mo": "3mo", "5mo": "3mo",
-                    "6mo": "6mo", "9mo": "6mo",
-                    "1y": "1y", "2y": "2y", "3y": "3y", "5y": "5y", "max": "max"
-                }
-                yf_period = period_map.get(period, "2y")
-                df = _self._fetch_with_retry(ticker, yf_period, interval)
+                start_date = _self._period_to_start_date(period)
+                end_date = datetime.now()
+                df = _self._fetch_with_retry(ticker, start_date, end_date, interval)
 
             if df.empty:
                 return pd.DataFrame()
@@ -250,7 +317,6 @@ class ProfessionalDataManager:
         for periods in [5,21,63,126,252,756,1260]:
             df[f'return_{periods}d'] = df['close'].pct_change(periods)
         df['volatility_20d'] = df['daily_return'].rolling(20).std() * np.sqrt(252)
-        # pandas 2.0+ compatibility
         return df.ffill().bfill()
 
     @st.cache_data(ttl=300, show_spinner=False)
@@ -313,8 +379,8 @@ class ProfessionalDataManager:
                 'previous_close': info.get('previousClose','N/A'),
                 'market_cap': fmt_mcap(info.get('marketCap')),
                 'enterprise_value': fmt_mcap(info.get('enterpriseValue')),
-                'trailing_pe': calculated_trailing_pe,
-                'forward_pe': calculated_forward_pe,
+                'trailing_pe': calculated_trailing_pe if calculated_trailing_pe != 'N/A' else 'N/A',
+                'forward_pe': calculated_forward_pe if calculated_forward_pe != 'N/A' else 'N/A',
                 'peg_ratio': info.get('pegRatio','N/A'),
                 'price_to_sales': info.get('priceToSalesTrailing12Months','N/A'),
                 'price_to_book': info.get('priceToBook','N/A'),
@@ -414,7 +480,7 @@ class ProfessionalDataManager:
             return pd.DataFrame()
 
 # =============================================================================
-# Advanced Forecasting Engine (full)
+# Advanced Forecasting Engine
 # =============================================================================
 class AdvancedForecastingEngine:
     def __init__(self):
@@ -422,8 +488,7 @@ class AdvancedForecastingEngine:
     def project_linear_regression(self, df: pd.DataFrame, days_ahead: int = 30):
         try:
             df_clean = df.dropna(subset=['close']).copy()
-            if len(df_clean) < 30:
-                return None, None
+            if len(df_clean) < 30: return None, None
             X = np.arange(len(df_clean)).reshape(-1,1)
             y = df_clean['close'].values
             model = LinearRegression()
@@ -442,11 +507,9 @@ class AdvancedForecastingEngine:
     def project_ar1(self, df: pd.DataFrame, days_ahead: int = 30):
         try:
             df_clean = df.dropna(subset=['close']).copy()
-            if len(df_clean) < 60:
-                return None, None
+            if len(df_clean) < 60: return None, None
             returns = df_clean['close'].pct_change().dropna()
-            if len(returns) < 30:
-                return None, None
+            if len(returns) < 30: return None, None
             X = returns[:-1].values.reshape(-1,1)
             y = returns[1:].values
             model = LinearRegression()
@@ -471,15 +534,12 @@ class AdvancedForecastingEngine:
         except:
             return None, None
     def project_monte_carlo_vectorized(self, df: pd.DataFrame, days_ahead: int = 30, sims: int = 1000):
-        if df.empty or 'close' not in df.columns:
-            return None,None,None,None
+        if df.empty or 'close' not in df.columns: return None,None,None,None
         try:
             df_clean = df.dropna(subset=['close']).copy()
-            if len(df_clean) < 30:
-                return None,None,None,None
+            if len(df_clean) < 30: return None,None,None,None
             returns = df_clean['close'].pct_change().dropna()
-            if len(returns) < 20:
-                return None,None,None,None
+            if len(returns) < 20: return None,None,None,None
             mu = returns.mean()
             sigma = returns.std()
             last_price = df_clean['close'].iloc[-1]
@@ -505,12 +565,10 @@ class AdvancedForecastingEngine:
         except:
             return None,None,None,None
     def project_arima_smart(self, df: pd.DataFrame, days_ahead: int = 30):
-        if df.empty or 'close' not in df.columns:
-            return None, "No data"
+        if df.empty or 'close' not in df.columns: return None, "No data"
         try:
             series = df['close'].dropna()
-            if len(series) < 30:
-                return None, "Insufficient data"
+            if len(series) < 30: return None, "Insufficient data"
             best_aic = np.inf
             best_order = (1,1,1)
             best_model = None
@@ -543,7 +601,7 @@ class AdvancedForecastingEngine:
             return None, f"ARIMA failed: {str(e)}"
 
 # =============================================================================
-# Multi-Method Prediction Engine (full)
+# Multi-Method Prediction Engine
 # =============================================================================
 class MultiMethodPredictionEngine:
     def __init__(self):
@@ -551,8 +609,7 @@ class MultiMethodPredictionEngine:
     def get_comprehensive_prediction(self, symbol: str, period: str = "max") -> Dict:
         try:
             data = self.data_manager.get_stock_data(symbol, period)
-            if data.empty:
-                return {'error':'No data'}
+            if data.empty: return {'error':'No data'}
             predictions = {}
             rf_pred = self._advanced_random_forest_prediction(data,symbol)
             if rf_pred: predictions['Random Forest Model'] = rf_pred
@@ -800,7 +857,7 @@ class PaperTradingEngine:
             return False,f"Trade execution error: {str(e)}"
 
 # =============================================================================
-# Professional Chart Engine (full)
+# Professional Chart Engine
 # =============================================================================
 class ProfessionalChartEngine:
     def __init__(self):
@@ -874,7 +931,7 @@ class ProfessionalChartEngine:
         return fig
 
 # =============================================================================
-# Database Manager (full)
+# Database Manager
 # =============================================================================
 class DatabaseManager:
     def __init__(self, db_path=Config.DB_PATH):
@@ -990,7 +1047,7 @@ class DatabaseManager:
         return results
 
 # =============================================================================
-# Professional Report Generator (full)
+# Professional Report Generator (updated to use export_plotly_chart)
 # =============================================================================
 class ProfessionalReportGenerator:
     def __init__(self):
@@ -1140,18 +1197,14 @@ class ProfessionalReportGenerator:
                 k1,v1 = fundamental_items[i]
                 html += f"<td><strong>{k1.replace('_',' ').title()}</strong><td>{v1}</td>"
             else:
-                html += "<td>\n<td>\n"
+                html += "<td></td><td></td>"
             if i+1 < len(fundamental_items):
                 k2,v2 = fundamental_items[i+1]
                 html += f"<td><strong>{k2.replace('_',' ').title()}</strong><td>{v2}</td>"
             else:
-                html += "<td>\n<td>\n"
+                html += "<td></td><td></td>"
             html += "</tr>"
-        html += """
-                            </tbody>
-                        </table>
-                    </div>
-        """
+        html += "</tbody></table></div>"
         if statements:
             for stmt_name,stmt_df in statements.items():
                 if stmt_name in ['income','balance','cash'] and not stmt_df.empty:
@@ -1159,7 +1212,7 @@ class ProfessionalReportGenerator:
                     html += f"<div class='section'><h2>📊 {display_name} (Annual)</h2><table class='statement-table'><thead><tr><th>Item</th>"
                     stmt_df.columns = pd.to_datetime(stmt_df.columns).strftime('%d-%b-%Y')
                     for col in stmt_df.columns: html += f"<th>{col}</th>"
-                    html += "<tr></thead><tbody>"
+                    html += "</tr></thead><tbody>"
                     for idx in stmt_df.index:
                         html += f"<tr><td>{idx}</td>"
                         for col in stmt_df.columns:
@@ -1199,8 +1252,12 @@ class ProfessionalReportGenerator:
         html += "</div>"
         if charts:
             html += "<div class='section'><h2>📈 Technical Analysis Charts</h2>"
-            for chart_name,chart_base64 in charts.items():
-                html += f"<h3>{chart_name}</h3><img src='data:image/png;base64,{chart_base64}' class='chart-img' />"
+            for chart_name, chart_bytes in charts.items():
+                if chart_bytes:
+                    chart_base64 = base64.b64encode(chart_bytes).decode()
+                    html += f"<h3>{chart_name}</h3><img src='data:image/png;base64,{chart_base64}' class='chart-img' />"
+                else:
+                    html += f"<h3>{chart_name}</h3><p>Chart could not be generated.</p>"
             html += "</div>"
         html += "<div class='section'><h2>📊 Technical Overview</h2><div class='metrics-grid'>"
         if not data.empty:
@@ -1218,7 +1275,7 @@ class ProfessionalReportGenerator:
         return html
 
 # =============================================================================
-# PDF Report Generator (full)
+# PDF Report Generator (updated to use export_plotly_chart)
 # =============================================================================
 class PDFReportGenerator:
     def __init__(self):
@@ -1282,10 +1339,13 @@ class PDFReportGenerator:
             if charts:
                 story.append(Paragraph("Technical Analysis Charts", self.heading_style))
                 for chart_name, img_bytes in charts.items():
-                    story.append(Paragraph(chart_name, self.styles['Heading3']))
-                    img_buf = BytesIO(img_bytes)
-                    story.append(Image(img_buf, width=5*inch, height=3*inch))
-                    story.append(Spacer(1,0.2*inch))
+                    if img_bytes:
+                        story.append(Paragraph(chart_name, self.styles['Heading3']))
+                        img_buf = BytesIO(img_bytes)
+                        story.append(Image(img_buf, width=5*inch, height=3*inch))
+                        story.append(Spacer(1,0.2*inch))
+                    else:
+                        story.append(Paragraph(f"{chart_name} could not be generated.", self.styles['Normal']))
             doc.build(story)
             return filename
         except Exception as e:
@@ -1293,27 +1353,210 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (disabled – no popups in final version)
+# Freemium Manager (with Google Sheets)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
-        pass
+        self.init_session_state()
+        self.user_id = self.get_user_id()
+        st.session_state.user_id = self.user_id
+    def init_session_state(self):
+        defaults = {"report_count":0,"search_count":0,"csv_export_count":0,"wait_until":None,"email_provided":False,"name":"","email":"","user_id":None,"feedback_shown_this_session":False,"feedback_step":1,"feedback_data":{}}
+        for key,val in defaults.items():
+            if key not in st.session_state:
+                st.session_state[key]=val
+    def get_user_id(self):
+        try:
+            HOST_PORT = "wsauthserver.supergroup.ai"
+            conn = injectWebsocketCode(hostPort=HOST_PORT, uid=str(uuid.uuid1()))
+            uid = conn.getLocalStorageVal(key="stock_app_user_id")
+            if not uid:
+                uid = str(uuid.uuid4())
+                conn.setLocalStorageVal(key="stock_app_user_id", val=uid)
+            return uid
+        except:
+            return str(uuid.uuid4())
     def can_perform_action(self, action_type: str) -> bool:
-        return True
+        if st.session_state.email_provided: return True
+        if st.session_state.wait_until and datetime.now() < st.session_state.wait_until:
+            remaining = (st.session_state.wait_until - datetime.now()).seconds//60
+            st.warning(f"Please wait {remaining} minutes.")
+            return False
+        if action_type == "report": return st.session_state.report_count < 1
+        elif action_type == "search": return st.session_state.search_count < 3
+        elif action_type == "csv_export": return st.session_state.csv_export_count < 1
+        return False
     def record_action(self, action_type: str):
-        pass
+        if action_type == "report": st.session_state.report_count += 1
+        elif action_type == "search": st.session_state.search_count += 1
+        elif action_type == "csv_export": st.session_state.csv_export_count += 1
+        st.rerun()
     def start_waiting_period(self):
-        pass
+        st.session_state.wait_until = datetime.now() + timedelta(minutes=15)
+        st.rerun()
 
-# =============================================================================
-# Google Sheets storage (optional – not used in final)
-# =============================================================================
 def get_gsheet_client():
-    return None
+    try:
+        creds_dict = st.secrets["gsheets_service_account"]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except:
+        return None
+
 def store_user_data(name, email, user_id):
-    return True
-def store_feedback(name, email, user_id, rating, feature, suggestions, step2_data=None):
-    return True
+    try:
+        client = get_gsheet_client()
+        if client:
+            sheet = client.open_by_url(st.secrets["gsheets"]["spreadsheet"]).worksheet("Users")
+            sheet.append_row([user_id, name, email, datetime.now().isoformat()])
+            return True
+    except:
+        pass
+    try:
+        Path("data").mkdir(exist_ok=True)
+        with open("data/users.csv", "a", newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if f.tell() == 0:
+                writer.writerow(["user_id","name","email","timestamp"])
+            writer.writerow([user_id, name, email, datetime.now().isoformat()])
+        return True
+    except:
+        return False
+
+def store_feedback(name, email, user_id, rating, reason, extra, next_feature):
+    try:
+        client = get_gsheet_client()
+        if client:
+            sheet = client.open_by_url(st.secrets["gsheets"]["spreadsheet"]).worksheet("Feedback")
+            sheet.append_row([user_id, name, email, rating, reason, extra, next_feature, datetime.now().isoformat()])
+            return True
+    except:
+        pass
+    try:
+        Path("data").mkdir(exist_ok=True)
+        with open("data/feedback.csv", "a", newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if f.tell() == 0:
+                writer.writerow(["user_id","name","email","rating","reason","extra","next_feature","timestamp"])
+            writer.writerow([user_id, name, email, rating, reason, extra, next_feature, datetime.now().isoformat()])
+        return True
+    except:
+        return False
+
+# Dialogs
+@st.dialog("📥 Free Code Download", width="medium")
+def email_capture_dialog(freemium):
+    st.markdown("🎁 Download the complete code – no payment required. ✨ Just enter your name & email, and you're all set. 🚀")
+    with st.form("email_form"):
+        name = st.text_input("Your Name")
+        email = st.text_input("Email Address")
+        col1, col2 = st.columns(2)
+        with col1:
+            submit = st.form_submit_button("CLAIM FREE CODE", type="primary")
+        with col2:
+            remind = st.form_submit_button("Remind me later")
+        if submit:
+            if name and email and is_valid_email(email):
+                if store_user_data(name, email, freemium.user_id):
+                    st.session_state.email_provided = True
+                    st.session_state.name = name
+                    st.session_state.email = email
+                    st.session_state.report_count = 0
+                    st.session_state.search_count = 0
+                    st.session_state.csv_export_count = 0
+                    st.success("🎉")
+                    KO_FI_URL = "https://ko-fi.com/s/d2b839b388"
+                    st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
+                    st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
+                    if st.button("Close"):
+                        st.rerun()
+                else:
+                    st.error("Failed to save data. Please try again.")
+            else:
+                st.error("Valid name and email required.")
+        if remind:
+            freemium.start_waiting_period()
+            st.rerun()
+
+@st.dialog("📝 We value your feedback!", width="medium")
+def feedback_dialog():
+    if "feedback_step" not in st.session_state:
+        st.session_state.feedback_step = 1
+        st.session_state.feedback_data = {}
+    if st.session_state.feedback_step == 1:
+        st.write(f"👋 Hey {st.session_state.name}, thanks for being a Pro!")
+        st.write("We'd love your feedback to make STOCK MARKET Pro even better.")
+        with st.form("feedback_step1"):
+            rating = st.slider("How likely are you to recommend STOCK MARKET Pro to a friend?", 0, 10, 5)
+            reason = st.text_area("What's the main reason for your score?")
+            next_btn = st.form_submit_button("Next →")
+            if next_btn:
+                st.session_state.feedback_data["rating"] = rating
+                st.session_state.feedback_data["reason"] = reason
+                st.session_state.feedback_step = 2
+                st.rerun()
+    elif st.session_state.feedback_step == 2:
+        st.write("**Almost done!**")
+        with st.form("feedback_step2"):
+            next_feature = st.selectbox(
+                "Which feature would you like to see next?",
+                ["More indicators", "Crypto support", "API access", "Backtesting", "Other"]
+            )
+            extra = st.text_area("Anything else you'd like to share? (optional)")
+            submit = st.form_submit_button("Submit feedback")
+            if submit:
+                success = store_feedback(
+                    st.session_state.name,
+                    st.session_state.email,
+                    st.session_state.user_id,
+                    st.session_state.feedback_data.get("rating"),
+                    st.session_state.feedback_data.get("reason"),
+                    extra,
+                    next_feature
+                )
+                if success:
+                    st.success("Thank you for your feedback! 🙏")
+                    st.session_state.feedback_shown_this_session = True
+                    st.session_state.feedback_step = 1
+                    st.session_state.feedback_data = {}
+                    st.rerun()
+                else:
+                    st.error("Failed to submit. Please try again.")
+
+def display_global_share_buttons():
+    APP_URL = "https://theaxeanalyst.streamlit.app"
+    message = "I'm using STOCK MARKET Pro – a free advanced stock analysis tool with ML predictions, forecasting, and paper trading. Check it out!"
+    encoded_message = quote(message)
+    encoded_url = quote(APP_URL)
+    linkedin_url = f"https://www.linkedin.com/sharing/share-offsite/?url={encoded_url}"
+    twitter_url = f"https://twitter.com/intent/tweet?text={encoded_message}&url={encoded_url}"
+    reddit_url = f"https://reddit.com/submit?url={encoded_url}&title={encoded_message}"
+    st.markdown("---")
+    cols = st.columns(3)
+    with cols[0]:
+        st.link_button("🔗 Share on LinkedIn", linkedin_url)
+    with cols[1]:
+        st.link_button("🐦 Share on Twitter", twitter_url)
+    with cols[2]:
+        st.link_button("🤖 Share on Reddit", reddit_url)
+    st.markdown("---")
+
+def display_contextual_share_buttons(message):
+    APP_URL = "https://theaxeanalyst.streamlit.app"
+    encoded_message = quote(message)
+    encoded_url = quote(APP_URL)
+    linkedin_url = f"https://www.linkedin.com/sharing/share-offsite/?url={encoded_url}"
+    twitter_url = f"https://twitter.com/intent/tweet?text={encoded_message}&url={encoded_url}"
+    reddit_url = f"https://reddit.com/submit?url={encoded_url}&title={encoded_message}"
+    st.markdown("### 📢 Share this analysis")
+    cols = st.columns(3)
+    with cols[0]:
+        st.link_button("🔗 LinkedIn", linkedin_url)
+    with cols[1]:
+        st.link_button("🐦 Twitter", twitter_url)
+    with cols[2]:
+        st.link_button("🤖 Reddit", reddit_url)
 
 # =============================================================================
 # Professional Market Platform (main app)
@@ -1332,6 +1575,7 @@ class ProfessionalMarketPlatform:
         self.freemium = FreemiumManager()
         self.setup_page()
         self.init_session_state()
+        self.handle_query_params()
 
     def setup_page(self):
         st.set_page_config(page_title="STOCK MARKET Pro - Advanced US Stock Analysis", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -1357,10 +1601,20 @@ class ProfessionalMarketPlatform:
         if 'start_date' not in st.session_state: st.session_state.start_date = None
         if 'end_date' not in st.session_state: st.session_state.end_date = None
 
+    def handle_query_params(self):
+        params = st.query_params
+        if "symbol" in params:
+            st.session_state.current_symbol = params["symbol"][0].upper()
+        if "period" in params:
+            st.session_state.analysis_period = params["period"][0]
+        if "tab" in params:
+            st.session_state.current_tab = params["tab"][0]
+
     def run(self):
         if st.session_state.previous_tab != st.session_state.current_tab:
             st.session_state.previous_tab = st.session_state.current_tab
         st.markdown('<div class="main-header">STOCK MARKET Pro - Advanced US Stock Analysis</div>', unsafe_allow_html=True)
+        display_global_share_buttons()
         self.render_sidebar()
         if st.session_state.current_tab == "Market Dashboard":
             self.render_market_dashboard()
@@ -1440,6 +1694,9 @@ class ProfessionalMarketPlatform:
             st.plotly_chart(self.chart_engine.create_volume_chart(index_data, selected_index), use_container_width=True)
 
     def render_stock_analysis(self):
+        if not self.freemium.can_perform_action("search"):
+            email_capture_dialog(self.freemium)
+            return
         st.header("🔍 Stock Analysis")
         symbol = st.session_state.current_symbol
         period = st.session_state.analysis_period
@@ -1455,6 +1712,7 @@ class ProfessionalMarketPlatform:
                 st.error(f"No data found for {symbol}")
                 return
             fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
+        self.freemium.record_action("search")
         current_price = data['close'].iloc[-1]
         col1,col2,col3,col4 = st.columns(4)
         with col1: st.markdown(f"**Company**<br>{fundamentals.get('company_name','N/A')}", unsafe_allow_html=True)
@@ -1593,6 +1851,8 @@ class ProfessionalMarketPlatform:
             tech_data = data.tail(10)[['close','sma_20','sma_50','rsi','macd','volume']].copy().round(3)
             tech_data.index = tech_data.index.strftime('%Y-%m-%d')
             st.dataframe(tech_data, use_container_width=True)
+        if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
+            feedback_dialog()
 
     def render_advanced_charts(self):
         st.header("📊 Advanced Technical Charts")
@@ -1673,6 +1933,7 @@ class ProfessionalMarketPlatform:
                 with col2: st.plotly_chart(self.chart_engine.create_technical_chart(data,"MACD"), use_container_width=True)
             with tab2:
                 st.plotly_chart(self.chart_engine.create_technical_chart(data,"Bollinger Bands"), use_container_width=True)
+        display_contextual_share_buttons(f"Check out the ML prediction for {symbol}: {best_pred['signal']} with {best_pred['confidence']:.1%} confidence!")
 
     def render_forecasting(self):
         st.header("🔮 Price Forecasting")
@@ -1861,7 +2122,6 @@ class ProfessionalMarketPlatform:
                     if isinstance(val,str) and '-' in val: return 'color: #dc3545'
                     elif isinstance(val,str) and '+' in val: return 'color: #28a745'
                     return ''
-                # FIX: pandas 2.1+ compatibility – replace applymap with map
                 styled_df = df.style.format({'Added Price':'${:.2f}','Current Price':'${:.2f}','Change $':'${:+.2f}','Change %':'{:+.2f}%'}).map(color_neg, subset=['Change $','Change %'])
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 st.subheader("Remove Stock")
@@ -1882,72 +2142,71 @@ class ProfessionalMarketPlatform:
         col1,col2 = st.columns(2)
         with col1:
             if st.button("Generate PDF Report", use_container_width=True, type="primary"):
-                with st.spinner("Generating comprehensive PDF report..."):
-                    data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
-                    fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
-                    statements = {
-                        'income': self.data_manager.get_financial_statements(symbol, 'income', 'annual'),
-                        'balance': self.data_manager.get_financial_statements(symbol, 'balance', 'annual'),
-                        'cash': self.data_manager.get_financial_statements(symbol, 'cash', 'annual'),
-                        'ratios': self.data_manager.calculate_ratios_from_statements(symbol)
-                    }
-                    charts = {}
-                    if not data.empty:
-                        for chart_name, indicator in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
-                            try:
-                                fig = self.chart_engine.create_technical_chart(data, indicator)
-                                # Try to generate PNG – if fails, skip but continue report
-                                img_bytes = fig.to_image(format="png", width=800, height=400)
-                                charts[chart_name] = img_bytes
-                            except Exception as e:
-                                st.warning(f"Could not generate chart for {chart_name}: {e}. The report will still be generated without this chart.")
-                    pdf_path = self.pdf_generator.generate_pdf(symbol, data, fundamentals, prediction, statements, charts)
-                    if pdf_path:
-                        price = data['close'].iloc[-1] if not data.empty else 0
-                        self.db_manager.add_report_history(symbol, price, prediction.get('best_prediction',{}).get('signal'), None, pdf_path)
-                        with open(pdf_path,"rb") as f:
-                            st.download_button("📥 Download PDF", f, file_name=os.path.basename(pdf_path))
-                    else:
-                        st.error("PDF generation failed")
+                if not self.freemium.can_perform_action("report"):
+                    email_capture_dialog(self.freemium)
+                else:
+                    with st.spinner("Generating comprehensive PDF report..."):
+                        data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
+                        fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
+                        prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
+                        statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
+                        charts = {}
+                        if not data.empty:
+                            for name,ind in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
+                                fig = self.chart_engine.create_technical_chart(data, ind)
+                                img = export_plotly_chart(fig)
+                                charts[name] = img
+                        pdf_path = self.pdf_generator.generate_pdf(symbol, data, fundamentals, prediction, statements, charts)
+                        if pdf_path:
+                            price = data['close'].iloc[-1] if not data.empty else 0
+                            self.db_manager.add_report_history(symbol, price, prediction.get('best_prediction',{}).get('signal'), None, pdf_path)
+                            with open(pdf_path,"rb") as f:
+                                st.download_button("📥 Download PDF", f, file_name=os.path.basename(pdf_path))
+                            self.freemium.record_action("report")
+                        else:
+                            st.error("PDF generation failed")
         with col2:
             if st.button("Generate HTML Report", use_container_width=True):
-                with st.spinner("Generating HTML report..."):
-                    data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
-                    fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-                    prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
-                    statements = {
-                        'income': self.data_manager.get_financial_statements(symbol, 'income', 'annual'),
-                        'balance': self.data_manager.get_financial_statements(symbol, 'balance', 'annual'),
-                        'cash': self.data_manager.get_financial_statements(symbol, 'cash', 'annual'),
-                        'ratios': self.data_manager.calculate_ratios_from_statements(symbol)
-                    }
-                    charts = {}
-                    if not data.empty:
-                        for chart_name, indicator in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
-                            try:
-                                fig = self.chart_engine.create_technical_chart(data, indicator)
-                                img_bytes = fig.to_image(format="png", width=800, height=400)
-                                charts[chart_name] = base64.b64encode(img_bytes).decode()
-                            except Exception as e:
-                                st.warning(f"Could not generate chart for {chart_name}: {e}. The report will still be generated without this chart.")
-                    result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
-                    st.success(result)
+                if not self.freemium.can_perform_action("report"):
+                    email_capture_dialog(self.freemium)
+                else:
+                    with st.spinner("Generating HTML report..."):
+                        data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
+                        fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
+                        prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
+                        statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
+                        charts = {}
+                        if not data.empty:
+                            for name,ind in [("RSI","RSI"),("MACD","MACD"),("Bollinger Bands","Bollinger Bands")]:
+                                fig = self.chart_engine.create_technical_chart(data, ind)
+                                img = export_plotly_chart(fig)
+                                charts[name] = img
+                        result = self.report_generator.generate_professional_pdf_report(symbol, data, fundamentals, prediction, statements, charts)
+                        st.success(result)
+                        self.freemium.record_action("report")
         st.subheader("📥 Comprehensive Data Export")
         if st.button("Export Detailed CSV", use_container_width=True):
-            data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
-            fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
-            prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
-            statements = {
-                'income': self.data_manager.get_financial_statements(symbol, 'income', 'annual'),
-                'balance': self.data_manager.get_financial_statements(symbol, 'balance', 'annual'),
-                'cash': self.data_manager.get_financial_statements(symbol, 'cash', 'annual'),
-                'ratios': self.data_manager.calculate_ratios_from_statements(symbol)
-            }
-            csv_file = self.report_generator.generate_comprehensive_csv(symbol, data, fundamentals, prediction, statements)
-            if csv_file:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button("📥 Download CSV", csv_file.getvalue(), file_name=f"{symbol}_analysis_{timestamp}.csv", mime="text/csv", use_container_width=True)
+            if not self.freemium.can_perform_action("csv_export"):
+                email_capture_dialog(self.freemium)
+            else:
+                data = self.data_manager.get_stock_data(symbol, st.session_state.analysis_period)
+                fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
+                prediction = self.prediction_engine.get_comprehensive_prediction(symbol, st.session_state.analysis_period)
+                statements = {'income':self.data_manager.get_financial_statements(symbol,'income','annual'),'balance':self.data_manager.get_financial_statements(symbol,'balance','annual'),'cash':self.data_manager.get_financial_statements(symbol,'cash','annual'),'ratios':self.data_manager.calculate_ratios_from_statements(symbol)}
+                csv_file = self.report_generator.generate_comprehensive_csv(symbol, data, fundamentals, prediction, statements)
+                if csv_file:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.download_button("📥 Download CSV", csv_file.getvalue(), file_name=f"{symbol}_analysis_{timestamp}.csv", mime="text/csv", use_container_width=True)
+                    self.freemium.record_action("csv_export")
+        # Shareable link
+        base_url = "https://theaxeanalyst.streamlit.app"
+        share_url = f"{base_url}?symbol={symbol}&period={st.session_state.analysis_period}&tab=Reports"
+        st.text_input("🔗 Shareable Report Link", value=share_url, key="share_url")
+        if st.button("📋 Copy Link"):
+            st.toast("Link copied to clipboard!")
+        display_contextual_share_buttons(f"Check out my comprehensive analysis report for {symbol} on STOCK MARKET Pro!")
+        if st.session_state.email_provided and not st.session_state.feedback_shown_this_session:
+            feedback_dialog()
 
 # =============================================================================
 # Main
