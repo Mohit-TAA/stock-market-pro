@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-STOCK MARKET Pro - Advanced US Stock Analysis - FINAL v17
+STOCK MARKET Pro - Advanced US Stock Analysis - FINAL v18
 Cloud‑ready version with:
 - Full historical data (CSV export fixed)
-- Chart export (Kaleido + Selenium fallback)
+- Chart export (Kaleido + Selenium fallback, no system packages required)
 - Freemium limits (email capture, Ko‑fi, Google Sheets)
 - Social sharing & shareable links
 - All original features (ML, forecasting, paper trading, etc.)
@@ -33,7 +33,7 @@ from urllib.parse import quote
 
 warnings.filterwarnings('ignore')
 
-# Auto‑install missing packages (will be handled by Streamlit Cloud via requirements.txt)
+# Auto‑install missing packages
 REQUIRED_PACKAGES = [
     'streamlit', 'pandas', 'numpy', 'yfinance', 'plotly',
     'scikit-learn', 'matplotlib', 'requests', 'joblib',
@@ -210,7 +210,7 @@ class Logger:
     def log_warning(self, message): self.logger.warning(message)
 
 # =============================================================================
-# Professional Data Manager (with fixed full history)
+# Professional Data Manager
 # =============================================================================
 class ProfessionalDataManager:
     def __init__(self):
@@ -1047,7 +1047,7 @@ class DatabaseManager:
         return results
 
 # =============================================================================
-# Professional Report Generator (updated to use export_plotly_chart)
+# Professional Report Generator
 # =============================================================================
 class ProfessionalReportGenerator:
     def __init__(self):
@@ -1275,7 +1275,7 @@ class ProfessionalReportGenerator:
         return html
 
 # =============================================================================
-# PDF Report Generator (updated to use export_plotly_chart)
+# PDF Report Generator
 # =============================================================================
 class PDFReportGenerator:
     def __init__(self):
@@ -1353,7 +1353,7 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# Freemium Manager (with Google Sheets)
+# Freemium Manager
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
@@ -1444,7 +1444,6 @@ def store_feedback(name, email, user_id, rating, reason, extra, next_feature):
     except:
         return False
 
-# Dialogs
 @st.dialog("📥 Free Code Download", width="medium")
 def email_capture_dialog(freemium):
     st.markdown("🎁 Download the complete code – no payment required. ✨ Just enter your name & email, and you're all set. 🚀")
@@ -1559,7 +1558,7 @@ def display_contextual_share_buttons(message):
         st.link_button("🤖 Reddit", reddit_url)
 
 # =============================================================================
-# Professional Market Platform (main app)
+# Professional Market Platform (main app) - Continued
 # =============================================================================
 class ProfessionalMarketPlatform:
     def __init__(self):
@@ -2198,7 +2197,6 @@ class ProfessionalMarketPlatform:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     st.download_button("📥 Download CSV", csv_file.getvalue(), file_name=f"{symbol}_analysis_{timestamp}.csv", mime="text/csv", use_container_width=True)
                     self.freemium.record_action("csv_export")
-        # Shareable link
         base_url = "https://theaxeanalyst.streamlit.app"
         share_url = f"{base_url}?symbol={symbol}&period={st.session_state.analysis_period}&tab=Reports"
         st.text_input("🔗 Shareable Report Link", value=share_url, key="share_url")
