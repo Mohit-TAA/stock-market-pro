@@ -1351,7 +1351,7 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (with the new popup logic)
+# FREEMIUM MANAGER (with the corrected popup logic)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
@@ -1370,7 +1370,8 @@ class FreemiumManager:
             "user_id": None,
             "feedback_shown_this_session": False,
             "show_mandatory_popup": False,
-            "show_reminder_popup": False
+            "show_reminder_popup": False,
+            "email_submitted_success": False  # Flag for popup success state
         }
         for key, default in defaults.items():
             if key not in st.session_state:
@@ -1487,63 +1488,83 @@ def store_feedback(name, email, user_id, rating, feature, suggestions, step2_dat
         return False
 
 # =============================================================================
-# Popups (Closable Reminder and Mandatory Email)
+# Popups (Closable Reminder and Mandatory Email) - FIXED VERSION
 # =============================================================================
 @st.dialog("📥 Free Code Download", width="medium", dismissible=True)
 def closable_reminder_popup(freemium: FreemiumManager):
     """Closable popup shown within free limits (after each search and when report button clicked)."""
     st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
-    with st.form("reminder_form"):
-        name = st.text_input("Your Name")
-        email = st.text_input("Email Address")
-        submitted = st.form_submit_button("CLAIM FREE CODE", type="primary")
-        if submitted:
-            if name and email and is_valid_email(email):
-                if store_user_data(name, email, freemium.user_id):
-                    st.session_state.email_provided = True
-                    st.session_state.name = name
-                    st.session_state.email = email
-                    st.session_state.report_count = 0
-                    st.session_state.search_count = 0
-                    st.markdown("🎉")
-                    KO_FI_URL = "https://ko-fi.com/s/d2b839b388"  # CHANGE THIS
-                    st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
-                    st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
-                    if st.button("Close"):
+
+    # Only show the form if submission hasn't succeeded yet
+    if not st.session_state.email_submitted_success:
+        with st.form("reminder_form"):
+            name = st.text_input("Your Name")
+            email = st.text_input("Email Address")
+            submitted = st.form_submit_button("CLAIM FREE CODE", type="primary")
+            if submitted:
+                if name and email and is_valid_email(email):
+                    if store_user_data(name, email, freemium.user_id):
+                        st.session_state.email_provided = True
+                        st.session_state.name = name
+                        st.session_state.email = email
+                        st.session_state.report_count = 0
+                        st.session_state.search_count = 0
+                        st.session_state.email_submitted_success = True
                         st.rerun()
+                    else:
+                        st.error("Failed to save data. Please try again.")
                 else:
-                    st.error("Failed to save data. Please try again.")
-            else:
-                st.error("Valid name and email required.")
+                    st.error("Valid name and email required.")
+
+    # After successful submission, show download link and close button (outside form)
+    if st.session_state.email_submitted_success:
+        st.markdown("🎉")
+        KO_FI_URL = "https://ko-fi.com/s/d2b839b388"  # CHANGE THIS
+        st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
+        st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
+        if st.button("Close"):
+            st.session_state.email_submitted_success = False  # reset for next time
+            st.rerun()
+
 
 @st.dialog("📥 Free Code Download", width="medium", dismissible=False)
 def mandatory_email_popup(freemium: FreemiumManager):
     """Non-skippable popup shown after limits are exceeded."""
     st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
-    with st.form("mandatory_form"):
-        name = st.text_input("Your Name")
-        email = st.text_input("Email Address")
-        submitted = st.form_submit_button("CLAIM FREE CODE", type="primary")
-        if submitted:
-            if name and email and is_valid_email(email):
-                if store_user_data(name, email, freemium.user_id):
-                    st.session_state.email_provided = True
-                    st.session_state.name = name
-                    st.session_state.email = email
-                    st.session_state.report_count = 0
-                    st.session_state.search_count = 0
-                    st.markdown("🎉")
-                    KO_FI_URL = "https://ko-fi.com/s/d2b839b388"  # CHANGE THIS
-                    st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
-                    st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
-                    if st.button("Close"):
+
+    if not st.session_state.email_submitted_success:
+        with st.form("mandatory_form"):
+            name = st.text_input("Your Name")
+            email = st.text_input("Email Address")
+            submitted = st.form_submit_button("CLAIM FREE CODE", type="primary")
+            if submitted:
+                if name and email and is_valid_email(email):
+                    if store_user_data(name, email, freemium.user_id):
+                        st.session_state.email_provided = True
+                        st.session_state.name = name
+                        st.session_state.email = email
+                        st.session_state.report_count = 0
+                        st.session_state.search_count = 0
+                        st.session_state.email_submitted_success = True
                         st.rerun()
+                    else:
+                        st.error("Failed to save data. Please try again.")
                 else:
-                    st.error("Failed to save data. Please try again.")
-            else:
-                st.error("Valid name and email required.")
-    if st.button("Remind me later"):
-        freemium.start_waiting_period()
+                    st.error("Valid name and email required.")
+        # Remind me later button (outside form)
+        if st.button("Remind me later"):
+            freemium.start_waiting_period()
+            st.rerun()
+
+    if st.session_state.email_submitted_success:
+        st.markdown("🎉")
+        KO_FI_URL = "https://ko-fi.com/s/d2b839b388"  # CHANGE THIS
+        st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
+        st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
+        if st.button("Close"):
+            st.session_state.email_submitted_success = False
+            st.rerun()
+
 
 @st.dialog("📝 We value your feedback!", width="medium")
 def feedback_dialog():
@@ -2200,8 +2221,6 @@ class ProfessionalMarketPlatform:
         st.subheader("📥 Comprehensive Data Export")
         if st.button("Export Detailed CSV", use_container_width=True):
             show_popup_and_exit()
-        
-        # No contextual share buttons because no report is generated.
 
 # =============================================================================
 # Main
