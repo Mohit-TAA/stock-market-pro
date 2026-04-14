@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 STOCK MARKET Pro - Advanced US Stock Analysis
-Final version – Reports tab shows only closable popup (no file generation)
+Final version – 3 free ticker limit, mandatory email popup on 4th ticker
 """
 
 import os
@@ -1351,7 +1351,7 @@ class PDFReportGenerator:
             return ""
 
 # =============================================================================
-# FREEMIUM MANAGER (with the corrected popup logic)
+# FREEMIUM MANAGER (Corrected: 3 ticker hard limit, no email unlock)
 # =============================================================================
 class FreemiumManager:
     def __init__(self):
@@ -1362,16 +1362,16 @@ class FreemiumManager:
     def init_session_state(self):
         defaults = {
             "report_count": 0,
-            "search_count": 0,
+            "analyzed_tickers": set(),          # distinct tickers analyzed (hard limit 3)
             "wait_until": None,
-            "email_provided": False,
+            "email_provided": False,             # not used for search limits, only for reports maybe
             "name": "",
             "email": "",
             "user_id": None,
             "feedback_shown_this_session": False,
             "show_mandatory_popup": False,
             "show_reminder_popup": False,
-            "email_submitted_success": False  # Flag for popup success state
+            "email_submitted_success": False
         }
         for key, default in defaults.items():
             if key not in st.session_state:
@@ -1390,40 +1390,40 @@ class FreemiumManager:
             return str(uuid.uuid4())
 
     def can_perform_action(self, action_type: str) -> bool:
-        """Check if user is within free limits (not yet exceeded)."""
-        if st.session_state.email_provided:
-            return True
+        """Check if user is within free limits (hard limit for search)."""
         if st.session_state.wait_until and datetime.now() < st.session_state.wait_until:
             remaining = (st.session_state.wait_until - datetime.now()).seconds // 60
             st.warning(f"Please wait {remaining} minutes.")
             return False
         if action_type == "report":
-            return st.session_state.report_count < 1
+            # Reports always show popup (no limit increase)
+            return True
         elif action_type == "search":
-            return st.session_state.search_count < 3
+            # Hard limit: cannot exceed 3 distinct tickers
+            return len(st.session_state.analyzed_tickers) < 3
         return False
 
-    def record_action(self, action_type: str):
-        """Increment counter only if still within free limit."""
-        if self.can_perform_action(action_type):
-            if action_type == "report":
-                st.session_state.report_count += 1
-            elif action_type == "search":
-                st.session_state.search_count += 1
-            st.rerun()
+    def record_action(self, action_type: str, symbol: Optional[str] = None):
+        """Record a search (add distinct ticker) or report (increment counter)."""
+        if action_type == "search" and symbol:
+            if self.can_perform_action("search"):
+                st.session_state.analyzed_tickers.add(symbol.upper())
+                st.rerun()
+        elif action_type == "report":
+            # Reports already handled separately; we don't increment anything
+            pass
 
     def start_waiting_period(self):
         st.session_state.wait_until = datetime.now() + timedelta(minutes=15)
         st.rerun()
 
     def is_limit_exceeded(self, action_type: str) -> bool:
-        """Check if the free limit has been reached (used to trigger mandatory popup)."""
-        if st.session_state.email_provided:
-            return False
+        """Check if free limit has been reached (used to trigger mandatory popup)."""
         if action_type == "report":
-            return st.session_state.report_count >= 1
+            return False  # handled elsewhere
         elif action_type == "search":
-            return st.session_state.search_count >= 3
+            # Hard 3 ticker limit – email does not bypass
+            return len(st.session_state.analyzed_tickers) >= 3
         return False
 
 # =============================================================================
@@ -1492,10 +1492,9 @@ def store_feedback(name, email, user_id, rating, feature, suggestions, step2_dat
 # =============================================================================
 @st.dialog("📥 Free Code Download", width="medium", dismissible=True)
 def closable_reminder_popup(freemium: FreemiumManager):
-    """Closable popup shown within free limits (after each search and when report button clicked)."""
+    """Closable popup shown after analysis within free limits."""
     st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
 
-    # Only show the form if submission hasn't succeeded yet
     if not st.session_state.email_submitted_success:
         with st.form("reminder_form"):
             name = st.text_input("Your Name")
@@ -1504,11 +1503,8 @@ def closable_reminder_popup(freemium: FreemiumManager):
             if submitted:
                 if name and email and is_valid_email(email):
                     if store_user_data(name, email, freemium.user_id):
-                        st.session_state.email_provided = True
                         st.session_state.name = name
                         st.session_state.email = email
-                        st.session_state.report_count = 0
-                        st.session_state.search_count = 0
                         st.session_state.email_submitted_success = True
                         st.rerun()
                     else:
@@ -1516,20 +1512,19 @@ def closable_reminder_popup(freemium: FreemiumManager):
                 else:
                     st.error("Valid name and email required.")
 
-    # After successful submission, show download link and close button (outside form)
     if st.session_state.email_submitted_success:
         st.markdown("🎉")
         KO_FI_URL = "https://ko-fi.com/s/d2b839b388"  # CHANGE THIS
         st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
         st.caption("*It is absolutely free. Pay what you feel this is worth — $1.11 is just the start.*")
         if st.button("Close"):
-            st.session_state.email_submitted_success = False  # reset for next time
+            st.session_state.email_submitted_success = False
             st.rerun()
 
 
 @st.dialog("📥 Free Code Download", width="medium", dismissible=False)
 def mandatory_email_popup(freemium: FreemiumManager):
-    """Non-skippable popup shown after limits are exceeded."""
+    """Non-skippable popup after 3rd distinct ticker limit reached."""
     st.markdown("🎁 Download the complete code – no payment required.\n\n✨ Just enter your name & email, and you're all set. 🚀")
 
     if not st.session_state.email_submitted_success:
@@ -1540,21 +1535,15 @@ def mandatory_email_popup(freemium: FreemiumManager):
             if submitted:
                 if name and email and is_valid_email(email):
                     if store_user_data(name, email, freemium.user_id):
-                        st.session_state.email_provided = True
                         st.session_state.name = name
                         st.session_state.email = email
-                        st.session_state.report_count = 0
-                        st.session_state.search_count = 0
                         st.session_state.email_submitted_success = True
                         st.rerun()
                     else:
                         st.error("Failed to save data. Please try again.")
                 else:
                     st.error("Valid name and email required.")
-        # Remind me later button (outside form)
-        if st.button("Remind me later"):
-            freemium.start_waiting_period()
-            st.rerun()
+        # NO "Remind me later" button – forced submission
 
     if st.session_state.email_submitted_success:
         st.markdown("🎉")
@@ -1568,7 +1557,6 @@ def mandatory_email_popup(freemium: FreemiumManager):
 
 @st.dialog("📝 We value your feedback!", width="medium")
 def feedback_dialog():
-    # Two-step feedback (Option A)
     if "feedback_step" not in st.session_state:
         st.session_state.feedback_step = 1
         st.session_state.feedback_data = {}
@@ -1648,9 +1636,9 @@ class ProfessionalMarketPlatform:
 
     def init_session_state(self):
         if 'current_symbol' not in st.session_state: st.session_state.current_symbol = 'AAPL'
-        if 'analysis_period' not in st.session_state: st.session_state.analysis_period = "max"
-        if 'current_tab' not in st.session_state: st.session_state.current_tab = "Market Dashboard"
-        if 'previous_tab' not in st.session_state: st.session_state.previous_tab = "Market Dashboard"
+        if 'analysis_period' not in st.session_state: st.session_state.analysis_period = "2y"
+        if 'current_tab' not in st.session_state: st.session_state.current_tab = "Stock Analysis"
+        if 'previous_tab' not in st.session_state: st.session_state.previous_tab = "Stock Analysis"
         if 'use_date_range' not in st.session_state: st.session_state.use_date_range = False
         if 'start_date' not in st.session_state: st.session_state.start_date = None
         if 'end_date' not in st.session_state: st.session_state.end_date = None
@@ -1687,7 +1675,7 @@ class ProfessionalMarketPlatform:
             st.header("🔍 Stock Analysis")
             with st.form("symbol_form"):
                 st.session_state.current_symbol = st.text_input("Stock Symbol", value=st.session_state.current_symbol).upper()
-                st.session_state.analysis_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else 12)
+                st.session_state.analysis_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else 9)
                 if st.checkbox("Use custom date range"):
                     col1,col2 = st.columns(2)
                     with col1: start = st.date_input("Start", datetime.now()-timedelta(days=365))
@@ -1745,9 +1733,10 @@ class ProfessionalMarketPlatform:
             st.info("Enter a stock symbol to begin analysis")
             return
 
+        # Check limit before fetching data
         if self.freemium.is_limit_exceeded("search"):
             mandatory_email_popup(self.freemium)
-            return
+            st.stop()  # Block analysis
 
         with st.spinner(f"Analyzing {symbol}..."):
             if st.session_state.use_date_range and st.session_state.start_date and st.session_state.end_date:
@@ -1759,10 +1748,12 @@ class ProfessionalMarketPlatform:
                 return
             fundamentals = self.data_manager.get_comprehensive_fundamental_data(symbol)
         
-        if not st.session_state.email_provided:
-            closable_reminder_popup(self.freemium)
+        # Record distinct ticker (only after successful data fetch)
+        self.freemium.record_action("search", symbol)
         
-        self.freemium.record_action("search")
+        # Show closable reminder popup after analysis (if limit not exceeded yet)
+        if not self.freemium.is_limit_exceeded("search"):
+            closable_reminder_popup(self.freemium)
         
         current_price = data['close'].iloc[-1]
         col1,col2,col3,col4 = st.columns(4)
@@ -2193,7 +2184,6 @@ class ProfessionalMarketPlatform:
             st.info("Enter a stock symbol to generate reports")
             return
         
-        # Shareable report link button (still works)
         base_url = "https://theaxeanalyst.streamlit.app"
         share_url = f"{base_url}?symbol={symbol}&period={st.session_state.analysis_period}&tab=Reports"
         st.subheader("🔗 Share this report")
@@ -2206,7 +2196,6 @@ class ProfessionalMarketPlatform:
         st.subheader("📄 Comprehensive Reports")
         col1, col2 = st.columns(2)
         
-        # Helper to show the popup (no file generation)
         def show_popup_and_exit():
             closable_reminder_popup(self.freemium)
             st.stop()
