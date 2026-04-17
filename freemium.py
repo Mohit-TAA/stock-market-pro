@@ -1,6 +1,6 @@
 """
 freemium.py – Freemium logic and email capture for STOCK MARKET Pro.
-Uses Web3Forms to securely store user name and email.
+Uses Formspree to securely store user name and email (free tier: 50/month).
 """
 
 import streamlit as st
@@ -16,6 +16,9 @@ import csv
 # -----------------------------------------------------------------------------
 FREE_TICKER_LIMIT = 3
 KO_FI_URL = "https://ko-fi.com/s/d2b839b388"   # CHANGE THIS TO YOUR ACTUAL URL
+
+# Your Formspree endpoint
+FORMSPREE_URL = "https://formspree.io/f/xwvaljgj"
 
 # -----------------------------------------------------------------------------
 # Session State Initialisation
@@ -54,36 +57,25 @@ def is_valid_email(email: str) -> bool:
     return re.match(pattern, email) is not None
 
 # -----------------------------------------------------------------------------
-# Web3Forms Storage (with detailed error reporting)
+# Formspree Storage
 # -----------------------------------------------------------------------------
-def store_user_data_web3forms(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> tuple[bool, str]:
-    """Send name and email to Web3Forms endpoint. Returns (success, message)."""
+def store_user_data_formspree(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> tuple[bool, str]:
+    """Send name and email to Formspree endpoint."""
     try:
-        access_key = st.secrets.get("WEB3FORMS_ACCESS_KEY")
-        if not access_key:
-            return False, "Missing Web3Forms access key in secrets."
-
-        url = "https://api.web3forms.com/submit"
         data = {
-            "access_key": access_key,
-            "subject": f"New Signup: {name}",
-            "from_name": "STOCK MARKET Pro",
             "name": name,
             "email": email,
-            "message": f"User ID: {user_id}\nSource: {source}\nTimestamp: {datetime.now().isoformat()}",
-            "botcheck": ""
+            "user_id": user_id,
+            "source": source,
+            "timestamp": datetime.now().isoformat()
         }
-        response = requests.post(url, json=data, timeout=10)
+        response = requests.post(FORMSPREE_URL, json=data, timeout=10)
         if response.status_code == 200:
-            result = response.json()
-            if result.get("success"):
-                return True, "Submission successful."
-            else:
-                return False, f"Web3Forms error: {result.get('message', 'Unknown error')}"
+            return True, "Saved to Formspree."
         else:
-            return False, f"HTTP error {response.status_code}: {response.text}"
+            return False, f"HTTP {response.status_code}: {response.text}"
     except Exception as e:
-        return False, f"Network/exception: {str(e)}"
+        return False, f"Exception: {str(e)}"
 
 def store_user_data_csv_fallback(name: str, email: str, user_id: str) -> tuple[bool, str]:
     """Fallback: store user data in local CSV file (data/users.csv)."""
@@ -101,11 +93,10 @@ def store_user_data_csv_fallback(name: str, email: str, user_id: str) -> tuple[b
         return False, f"CSV fallback failed: {str(e)}"
 
 def store_user_data(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> tuple[bool, str]:
-    """Primary: Web3Forms, fallback: CSV."""
-    success, msg = store_user_data_web3forms(name, email, user_id, source)
+    """Primary: Formspree, fallback: CSV."""
+    success, msg = store_user_data_formspree(name, email, user_id, source)
     if success:
         return True, msg
-    # Try fallback
     fb_success, fb_msg = store_user_data_csv_fallback(name, email, user_id)
     if fb_success:
         return True, f"{msg} → {fb_msg}"
