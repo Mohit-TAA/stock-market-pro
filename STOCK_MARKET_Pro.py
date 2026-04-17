@@ -3,6 +3,7 @@
 STOCK MARKET Pro - Advanced US Stock Analysis
 Final version – 3 free tickers, email unlocks 4th, then 3 more free, then download‑only popup.
 Web3Forms email capture, Market Dashboard default, smooth tab switching, pandas 2.x compatible.
+Custom date range removed, deprecated Streamlit parameters updated.
 """
 
 import os
@@ -227,21 +228,17 @@ class ProfessionalDataManager:
         return pd.DataFrame()
 
     @st.cache_data(ttl=300, show_spinner=False)
-    def get_stock_data(_self, symbol: str, period: str = "max", interval: str = "1d",
-                       start: Optional[datetime] = None, end: Optional[datetime] = None) -> pd.DataFrame:
+    def get_stock_data(_self, symbol: str, period: str = "max", interval: str = "1d") -> pd.DataFrame:
         try:
             ticker = yf.Ticker(symbol)
-            if start and end:
-                df = ticker.history(start=start, end=end, interval=interval, auto_adjust=True)
-            else:
-                period_map = {
-                    "1w": "5d",
-                    "1mo": "1mo", "2mo": "2mo", "3mo": "3mo", "4mo": "3mo", "5mo": "3mo",
-                    "6mo": "6mo", "9mo": "6mo",
-                    "1y": "1y", "2y": "2y", "3y": "3y", "5y": "5y", "max": "max"
-                }
-                yf_period = period_map.get(period, "2y")
-                df = _self._fetch_with_retry(ticker, yf_period, interval)
+            period_map = {
+                "1w": "5d",
+                "1mo": "1mo", "2mo": "2mo", "3mo": "3mo", "4mo": "3mo", "5mo": "3mo",
+                "6mo": "6mo", "9mo": "6mo",
+                "1y": "1y", "2y": "2y", "3y": "3y", "5y": "5y", "max": "max"
+            }
+            yf_period = period_map.get(period, "2y")
+            df = _self._fetch_with_retry(ticker, yf_period, interval)
 
             if df.empty:
                 return pd.DataFrame()
@@ -300,7 +297,6 @@ class ProfessionalDataManager:
         for periods in [5,21,63,126,252,756,1260]:
             df[f'return_{periods}d'] = df['close'].pct_change(periods)
         df['volatility_20d'] = df['daily_return'].rolling(20).std() * np.sqrt(252)
-        # FIXED: use ffill() and bfill() instead of fillna(method=...)
         return df.ffill().bfill()
 
     @st.cache_data(ttl=300, show_spinner=False)
@@ -1380,9 +1376,6 @@ class ProfessionalMarketPlatform:
         if 'analysis_period' not in st.session_state: st.session_state.analysis_period = "1y"
         if 'current_tab' not in st.session_state: st.session_state.current_tab = "Market Dashboard"
         if 'previous_tab' not in st.session_state: st.session_state.previous_tab = "Market Dashboard"
-        if 'use_date_range' not in st.session_state: st.session_state.use_date_range = False
-        if 'start_date' not in st.session_state: st.session_state.start_date = None
-        if 'end_date' not in st.session_state: st.session_state.end_date = None
 
     def run(self):
         if st.session_state.previous_tab != st.session_state.current_tab:
@@ -1421,17 +1414,7 @@ class ProfessionalMarketPlatform:
                 new_symbol = st.text_input("Stock Symbol", value=st.session_state.current_symbol).upper()
                 new_period = st.selectbox("Time Period", Config.PERIOD_OPTIONS, 
                                           index=Config.PERIOD_OPTIONS.index(st.session_state.analysis_period) if st.session_state.analysis_period in Config.PERIOD_OPTIONS else 8)
-                if st.checkbox("Use custom date range"):
-                    col1,col2 = st.columns(2)
-                    with col1: start = st.date_input("Start", datetime.now()-timedelta(days=365))
-                    with col2: end = st.date_input("End", datetime.now())
-                    st.session_state.start_date = start
-                    st.session_state.end_date = end
-                    st.session_state.use_date_range = True
-                else:
-                    st.session_state.use_date_range = False
-                
-                submitted = st.form_submit_button("Analyze Stock", use_container_width=True)
+                submitted = st.form_submit_button("Analyze Stock", width='stretch')
                 if submitted:
                     st.session_state.current_symbol = new_symbol
                     st.session_state.analysis_period = new_period
@@ -1442,7 +1425,7 @@ class ProfessionalMarketPlatform:
             cols = st.columns(3)
             for i,stock in enumerate(POPULAR_STOCKS[:9]):
                 with cols[i%3]:
-                    if st.button(stock, key=f"quick_{stock}", use_container_width=True):
+                    if st.button(stock, key=f"quick_{stock}", width='stretch'):
                         st.session_state.current_symbol = stock
                         st.session_state.current_tab = "Stock Analysis"
                         st.rerun()
@@ -1474,8 +1457,8 @@ class ProfessionalMarketPlatform:
         selected_index = st.selectbox("Select Index for Chart", list(Config.MAJOR_INDICES.keys()))
         index_data = self.data_manager.get_stock_data(Config.MAJOR_INDICES[selected_index], "2y")
         if not index_data.empty:
-            st.plotly_chart(self.chart_engine.create_price_chart(index_data, selected_index), use_container_width=True)
-            st.plotly_chart(self.chart_engine.create_volume_chart(index_data, selected_index), use_container_width=True)
+            st.plotly_chart(self.chart_engine.create_price_chart(index_data, selected_index), width='stretch')
+            st.plotly_chart(self.chart_engine.create_volume_chart(index_data, selected_index), width='stretch')
 
     def render_stock_analysis(self):
         symbol = st.session_state.current_symbol
@@ -1489,10 +1472,7 @@ class ProfessionalMarketPlatform:
             st.stop()
 
         with st.spinner(f"Analyzing {symbol}..."):
-            if st.session_state.use_date_range and st.session_state.start_date and st.session_state.end_date:
-                data = self.data_manager.get_stock_data(symbol, start=st.session_state.start_date, end=st.session_state.end_date)
-            else:
-                data = self.data_manager.get_stock_data(symbol, period)
+            data = self.data_manager.get_stock_data(symbol, period)
             if data.empty:
                 st.error(f"No data found for {symbol}")
                 return
@@ -1549,13 +1529,13 @@ class ProfessionalMarketPlatform:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=df_perf['Timeframe'], y=df_perf['Return'], marker_color=['green' if r>=0 else 'red' for r in df_perf['Return']], text=df_perf['Return'].apply(lambda x:f"{x:+.1f}%"), textposition='auto'))
             fig.update_layout(title=f"{symbol} Returns", template='plotly_white', height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("Insufficient data for bar chart")
         st.subheader("Price Chart with Technical Indicators")
-        st.plotly_chart(self.chart_engine.create_price_chart(data, symbol), use_container_width=True)
+        st.plotly_chart(self.chart_engine.create_price_chart(data, symbol), width='stretch')
         st.subheader("Volume Analysis")
-        st.plotly_chart(self.chart_engine.create_volume_chart(data, symbol), use_container_width=True)
+        st.plotly_chart(self.chart_engine.create_volume_chart(data, symbol), width='stretch')
         st.subheader("Technical Indicators")
         c1,c2,c3,c4 = st.columns(4)
         with c1:
@@ -1618,7 +1598,7 @@ class ProfessionalMarketPlatform:
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=metrics[sel].index, y=metrics[sel].values, mode='lines+markers', name=sel))
                     fig.update_layout(title=f"{sel} Over Time", template='plotly_white')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             else:
                 st.info("No metrics available")
         else:
@@ -1631,14 +1611,14 @@ class ProfessionalMarketPlatform:
         df_stmt = self.data_manager.get_financial_statements(symbol, tmap[stype], fmap[freq])
         if not df_stmt.empty:
             df_stmt.columns = pd.to_datetime(df_stmt.columns).strftime('%d-%b-%Y')
-            st.dataframe(df_stmt.style.format(format_large_number), use_container_width=True)
+            st.dataframe(df_stmt.style.format(format_large_number), width='stretch')
         else:
             st.info("No data available")
         st.subheader("📋 Technical Analysis Data")
         if not data.empty:
             tech_data = data.tail(10)[['close','sma_20','sma_50','rsi','macd','volume']].copy().round(3)
             tech_data.index = tech_data.index.strftime('%Y-%m-%d')
-            st.dataframe(tech_data, use_container_width=True)
+            st.dataframe(tech_data, width='stretch')
 
     def render_advanced_charts(self):
         st.header("📊 Advanced Technical Charts")
@@ -1648,10 +1628,7 @@ class ProfessionalMarketPlatform:
             st.info("Enter a stock symbol to view advanced charts")
             return
         with st.spinner(f"Loading advanced charts for {symbol}..."):
-            if st.session_state.use_date_range and st.session_state.start_date and st.session_state.end_date:
-                data = self.data_manager.get_stock_data(symbol, start=st.session_state.start_date, end=st.session_state.end_date)
-            else:
-                data = self.data_manager.get_stock_data(symbol, period)
+            data = self.data_manager.get_stock_data(symbol, period)
             if data.empty:
                 st.error(f"No data found for {symbol}")
                 return
@@ -1659,7 +1636,7 @@ class ProfessionalMarketPlatform:
         selected = st.multiselect("Select Charts to Display", list(chart_options.keys()), default=["RSI","MACD","Bollinger Bands"])
         for name in selected:
             st.subheader(name)
-            st.plotly_chart(self.chart_engine.create_technical_chart(data, chart_options[name]), use_container_width=True)
+            st.plotly_chart(self.chart_engine.create_technical_chart(data, chart_options[name]), width='stretch')
 
     def render_ml_predictions(self):
         st.header("🤖 Multi-Method Market Predictions")
@@ -1715,10 +1692,10 @@ class ProfessionalMarketPlatform:
             tab1,tab2 = st.tabs(["RSI & MACD","Price Trends"])
             with tab1:
                 col1,col2 = st.columns(2)
-                with col1: st.plotly_chart(self.chart_engine.create_technical_chart(data,"RSI"), use_container_width=True)
-                with col2: st.plotly_chart(self.chart_engine.create_technical_chart(data,"MACD"), use_container_width=True)
+                with col1: st.plotly_chart(self.chart_engine.create_technical_chart(data,"RSI"), width='stretch')
+                with col2: st.plotly_chart(self.chart_engine.create_technical_chart(data,"MACD"), width='stretch')
             with tab2:
-                st.plotly_chart(self.chart_engine.create_technical_chart(data,"Bollinger Bands"), use_container_width=True)
+                st.plotly_chart(self.chart_engine.create_technical_chart(data,"Bollinger Bands"), width='stretch')
         display_contextual_share_buttons(f"Check out the ML prediction for {symbol}: {best_pred['signal']} with {best_pred['confidence']:.1%} confidence!")
 
     def render_forecasting(self):
@@ -1737,12 +1714,9 @@ class ProfessionalMarketPlatform:
             use_ar1 = st.checkbox("AR(1) Model",True)
             use_mc = st.checkbox("Monte Carlo",True)
             use_arima = st.checkbox("ARIMA",True)
-        if st.button("Run Forecast", type="primary", use_container_width=True):
+        if st.button("Run Forecast", type="primary", width='stretch'):
             with st.spinner(f"Running forecasts for {symbol}..."):
-                if st.session_state.use_date_range and st.session_state.start_date and st.session_state.end_date:
-                    data = self.data_manager.get_stock_data(symbol, start=st.session_state.start_date, end=st.session_state.end_date)
-                else:
-                    data = self.data_manager.get_stock_data(symbol, period)
+                data = self.data_manager.get_stock_data(symbol, period)
                 if data.empty:
                     st.error(f"No data found for {symbol}")
                     return
@@ -1792,14 +1766,14 @@ class ProfessionalMarketPlatform:
                     fig.add_trace(go.Scatter(x=high_series.index, y=high_series.values, name='95% Upper', line=dict(color='gray',width=1,dash='dot'), opacity=0.7))
                     fig.add_trace(go.Scatter(x=low_series.index, y=low_series.values, name='95% Lower', line=dict(color='gray',width=1,dash='dot'), opacity=0.7, fill='tonexty'))
                     fig.update_layout(title=f"{symbol} - {model_name} Forecast", template='plotly_white', height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 else:
                     if 'series' not in forecast or forecast['series'] is None: continue
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=data.tail(60).index, y=data.tail(60)['close'], name='Historical', line=dict(color='blue',width=2)))
                     fig.add_trace(go.Scatter(x=forecast['series'].index, y=forecast['series'].values, name='Forecast', line=dict(color='green',width=2,dash='dash')))
                     fig.update_layout(title=f"{symbol} - {model_name} Forecast", template='plotly_white', height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 if model_name == 'ARIMA' and 'summary' in forecast:
                     st.text_area("Model Details", forecast['summary'], height=100)
 
@@ -1829,13 +1803,13 @@ class ProfessionalMarketPlatform:
                 holdings_data = []
                 for h in portfolio['holdings']:
                     holdings_data.append({'Symbol':h['symbol'],'Quantity':h['quantity'],'Avg Price':f"${h['avg_price']:.2f}",'Current Price':f"${h['current_price']:.2f}",'Invested':f"${h['invested_value']:,.2f}",'Current Value':f"${h['current_value']:,.2f}",'P&L':f"${h['unrealized_pnl']:,.2f}",'P&L %':f"{h['pnl_percentage']:+.2f}%"})
-                st.dataframe(pd.DataFrame(holdings_data), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(holdings_data), width='stretch', hide_index=True)
                 labels = [h['symbol'] for h in portfolio['holdings']]
                 values = [h['current_value'] for h in portfolio['holdings']]
                 if values:
                     fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
                     fig.update_layout(title="Portfolio Allocation")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
         st.subheader("💰 Trading Interface")
         col1,col2 = st.columns(2)
         with col1:
@@ -1843,7 +1817,7 @@ class ProfessionalMarketPlatform:
             with st.form("buy_form"):
                 buy_qty = st.number_input("Quantity", min_value=1, value=10, key="buy_qty")
                 buy_price = st.number_input("Price", value=float(current_price), key="buy_price")
-                if st.form_submit_button("🟢 Execute Buy Order", use_container_width=True):
+                if st.form_submit_button("🟢 Execute Buy Order", width='stretch'):
                     success,msg = self.trading_engine.execute_trade(symbol,'BUY',buy_qty,buy_price)
                     if success: st.success(msg); st.rerun()
                     else: st.error(msg)
@@ -1858,7 +1832,7 @@ class ProfessionalMarketPlatform:
                 with st.form("sell_form"):
                     sell_qty = st.number_input("Quantity", min_value=1, value=min(10,max_sell), max_value=max_sell, key="sell_qty")
                     sell_price = st.number_input("Price", value=float(current_price), key="sell_price")
-                    if st.form_submit_button("🔴 Execute Sell Order", use_container_width=True):
+                    if st.form_submit_button("🔴 Execute Sell Order", width='stretch'):
                         success,msg = self.trading_engine.execute_trade(symbol,'SELL',sell_qty,sell_price)
                         if success: st.success(msg); st.rerun()
                         else: st.error(msg)
@@ -1870,7 +1844,7 @@ class ProfessionalMarketPlatform:
             trans_data = []
             for sym,act,qty,price,total,date in transactions:
                 trans_data.append({'Date':date[:16],'Symbol':sym,'Action':act,'Quantity':qty,'Price':f"${price:.2f}",'Total':f"${total:.2f}"})
-            st.dataframe(pd.DataFrame(trans_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(trans_data), width='stretch', hide_index=True)
         else:
             st.info("No transactions yet")
 
@@ -1881,7 +1855,7 @@ class ProfessionalMarketPlatform:
             with col1: new_symbol = st.text_input("Stock Symbol", placeholder="Enter symbol (e.g., AAPL)").upper()
             with col2: notes = st.text_input("Notes", placeholder="Optional notes")
             with col3:
-                add_submitted = st.form_submit_button("Add to Watchlist", use_container_width=True)
+                add_submitted = st.form_submit_button("Add to Watchlist", width='stretch')
                 if add_submitted and new_symbol:
                     data = self.data_manager.get_stock_data(new_symbol,"1d")
                     if not data.empty:
@@ -1893,7 +1867,7 @@ class ProfessionalMarketPlatform:
         st.subheader("Your Watchlist")
         watchlist = self.db_manager.get_watchlist()
         if watchlist:
-            if st.button("🔄 Refresh Watchlist Prices", use_container_width=True): st.rerun()
+            if st.button("🔄 Refresh Watchlist Prices", width='stretch'): st.rerun()
             watchlist_data = []
             for symbol,added_price,added_date,notes in watchlist:
                 current_data = self.data_manager.get_stock_data(symbol,"1d")
@@ -1909,10 +1883,10 @@ class ProfessionalMarketPlatform:
                     elif isinstance(val,str) and '+' in val: return 'color: #28a745'
                     return ''
                 styled_df = df.style.format({'Added Price':'${:.2f}','Current Price':'${:.2f}','Change $':'${:+.2f}','Change %':'{:+.2f}%'}).map(color_neg, subset=['Change $','Change %'])
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                st.dataframe(styled_df, width='stretch', hide_index=True)
                 st.subheader("Remove Stock")
                 selected_symbol = st.selectbox("Select symbol to remove", [w[0] for w in watchlist])
-                if st.button("🗑️ Remove Selected Symbol", use_container_width=True):
+                if st.button("🗑️ Remove Selected Symbol", width='stretch'):
                     if self.db_manager.remove_from_watchlist(selected_symbol): st.success(f"Removed {selected_symbol} from watchlist"); st.rerun()
                     else: st.error("Failed to remove from watchlist")
         else:
@@ -1925,29 +1899,18 @@ class ProfessionalMarketPlatform:
             st.info("Enter a stock symbol to generate reports")
             return
         
-        base_url = "https://theaxeanalyst.streamlit.app"
-        share_url = f"{base_url}?symbol={symbol}&period={st.session_state.analysis_period}&tab=Reports"
-        st.subheader("🔗 Share this report")
-        col_link, _ = st.columns([1, 3])
-        with col_link:
-            if st.button("📋 Copy shareable report link"):
-                st.write(f'<script>navigator.clipboard.writeText("{share_url}"); alert("Link copied to clipboard!");</script>', unsafe_allow_html=True)
-                st.success("Link copied!")
-        
         st.subheader("📄 Comprehensive Reports")
         col1, col2 = st.columns(2)
-        
         with col1:
-            if st.button("Generate PDF Report", use_container_width=True, type="primary"):
+            if st.button("Generate PDF Report", width='stretch', type="primary"):
                 freemium.download_reminder_popup()
                 st.stop()
         with col2:
-            if st.button("Generate HTML Report", use_container_width=True):
+            if st.button("Generate HTML Report", width='stretch'):
                 freemium.download_reminder_popup()
                 st.stop()
-        
         st.subheader("📥 Comprehensive Data Export")
-        if st.button("Export Detailed CSV", use_container_width=True):
+        if st.button("Export Detailed CSV", width='stretch'):
             freemium.download_reminder_popup()
             st.stop()
 
