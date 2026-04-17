@@ -12,6 +12,5 @@ xlsxwriter
 statsmodels
 ta
 reportlab
+kaleido
 streamlit-ws-localstorage
-gspread
-google-auth
