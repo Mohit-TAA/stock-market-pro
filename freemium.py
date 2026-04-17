@@ -54,14 +54,14 @@ def is_valid_email(email: str) -> bool:
     return re.match(pattern, email) is not None
 
 # -----------------------------------------------------------------------------
-# Web3Forms Storage
+# Web3Forms Storage (with detailed error reporting)
 # -----------------------------------------------------------------------------
-def store_user_data_web3forms(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> bool:
-    """Send name and email to Web3Forms endpoint."""
+def store_user_data_web3forms(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> tuple[bool, str]:
+    """Send name and email to Web3Forms endpoint. Returns (success, message)."""
     try:
         access_key = st.secrets.get("WEB3FORMS_ACCESS_KEY")
         if not access_key:
-            return False
+            return False, "Missing Web3Forms access key in secrets."
 
         url = "https://api.web3forms.com/submit"
         data = {
@@ -74,11 +74,18 @@ def store_user_data_web3forms(name: str, email: str, user_id: str, source: str =
             "botcheck": ""
         }
         response = requests.post(url, json=data, timeout=10)
-        return response.status_code == 200
-    except Exception:
-        return False
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                return True, "Submission successful."
+            else:
+                return False, f"Web3Forms error: {result.get('message', 'Unknown error')}"
+        else:
+            return False, f"HTTP error {response.status_code}: {response.text}"
+    except Exception as e:
+        return False, f"Network/exception: {str(e)}"
 
-def store_user_data_csv_fallback(name: str, email: str, user_id: str) -> bool:
+def store_user_data_csv_fallback(name: str, email: str, user_id: str) -> tuple[bool, str]:
     """Fallback: store user data in local CSV file (data/users.csv)."""
     try:
         Path("data").mkdir(exist_ok=True)
@@ -89,26 +96,26 @@ def store_user_data_csv_fallback(name: str, email: str, user_id: str) -> bool:
             if not file_exists:
                 writer.writerow(["user_id", "name", "email", "timestamp"])
             writer.writerow([user_id, name, email, datetime.now().isoformat()])
-        return True
-    except Exception:
-        return False
+        return True, "Saved locally (CSV fallback)."
+    except Exception as e:
+        return False, f"CSV fallback failed: {str(e)}"
 
-def store_user_data(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> bool:
+def store_user_data(name: str, email: str, user_id: str, source: str = "mandatory_popup") -> tuple[bool, str]:
     """Primary: Web3Forms, fallback: CSV."""
-    if store_user_data_web3forms(name, email, user_id, source):
-        return True
-    return store_user_data_csv_fallback(name, email, user_id)
+    success, msg = store_user_data_web3forms(name, email, user_id, source)
+    if success:
+        return True, msg
+    # Try fallback
+    fb_success, fb_msg = store_user_data_csv_fallback(name, email, user_id)
+    if fb_success:
+        return True, f"{msg} → {fb_msg}"
+    else:
+        return False, f"{msg} → {fb_msg}"
 
 # -----------------------------------------------------------------------------
 # Freemium Limit Checks
 # -----------------------------------------------------------------------------
 def can_analyze(symbol: str) -> bool:
-    """
-    Return True if the user is allowed to analyse this symbol.
-    - If email already submitted: always True.
-    - Else: allowed only if symbol is already in analysed set,
-      or if total distinct tickers < FREE_TICKER_LIMIT.
-    """
     symbol = symbol.upper()
     if st.session_state.email_submitted:
         return True
@@ -117,28 +124,14 @@ def can_analyze(symbol: str) -> bool:
     return len(st.session_state.analyzed_tickers) < FREE_TICKER_LIMIT
 
 def record_analysis(symbol: str):
-    """Add a distinct ticker to the analysed set (call after successful data fetch)."""
     symbol = symbol.upper()
     st.session_state.analyzed_tickers.add(symbol)
-
-def is_limit_exceeded(symbol: str) -> bool:
-    """Return True if the free limit has been reached and email not submitted."""
-    if st.session_state.email_submitted:
-        return False
-    symbol = symbol.upper()
-    if symbol in st.session_state.analyzed_tickers:
-        return False
-    return len(st.session_state.analyzed_tickers) >= FREE_TICKER_LIMIT
 
 # -----------------------------------------------------------------------------
 # Popups
 # -----------------------------------------------------------------------------
 @st.dialog("📥 Unlock Unlimited Access", width="medium")
 def mandatory_email_popup():
-    """
-    Non-dismissible popup that collects name and email to unlock the 4th ticker.
-    After successful submission, the user can close and continue.
-    """
     st.markdown("""
     ### 🎁 You've reached the free limit!
     To analyse a 4th stock, please enter your name and email below.  
@@ -156,22 +149,22 @@ def mandatory_email_popup():
             elif not is_valid_email(email):
                 st.error("Please enter a valid email address.")
             else:
-                success = store_user_data(name, email, st.session_state.user_id, source="mandatory_4th")
+                with st.spinner("Submitting..."):
+                    success, message = store_user_data(name, email, st.session_state.user_id, source="mandatory_4th")
                 if success:
                     st.session_state.name = name
                     st.session_state.email = email
                     st.session_state.email_submitted = True
-                    st.success("✅ Thank you! You can now close this window.")
+                    st.success(f"✅ Thank you! {message}")
                     st.markdown("---")
                     st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL)
                     st.caption("*Pay what you feel this is worth — $1.11 is a great start.*")
                     st.stop()
                 else:
-                    st.error("Failed to save your information. Please try again.")
+                    st.error(f"❌ Submission failed: {message}")
 
 @st.dialog("📥 Download Full Source Code", width="medium")
 def download_reminder_popup():
-    """Closable popup used for reports / exports."""
     st.markdown("## 🎁 Download the Complete Code")
     st.markdown("Run the app locally with **no restrictions**.")
     st.link_button("📥 DOWNLOAD THE CODES", KO_FI_URL, type="primary")
